@@ -4,11 +4,12 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
-import lombok.NonNull;
+import lombok.Setter;
 
 import java.util.Map;
 
 @Getter
+@Setter
 public class NodeRequest {
     @NotNull(message = "Node name cannot be null")
     @NotEmpty(message = "Node name cannot be empty")
