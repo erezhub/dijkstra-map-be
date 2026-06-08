@@ -91,7 +91,7 @@ Shared infrastructure used by both services.
 | `init` | `DefaultAdminInitializer` — creates the admin user on startup if none exists |
 
 **Key decisions:**
-- **Tokens are opaque UUIDs** stored in `tokens` collection with a `valid` boolean and a TTL index (`@Indexed(expireAfterSeconds = 0)` on `expiresAt`). Validation = DB lookup only; no JWT secret is needed at validation time.
+- **Tokens are opaque UUIDs** stored in `tokens` collection with a `valid` boolean and a TTL index (`@Indexed(expireAfterSeconds = 0)` on `expiresAt`). Validation = DB lookup only; no JWT secret is needed at validation time. `JwtFilter` checks both `valid == true` and `expiresAt.after(now)` — MongoDB's TTL cleanup runs every ~60 s so the document may still exist after expiration.
 - **`JwtFilter`** sets a Spring Security `UserDetails` object (not a plain `String`) as the principal so `@AuthenticationPrincipal UserDetails` resolves correctly in controllers.
 - **Login identifier**: MANAGER/REGULAR log in with email; ADMIN logs in with username `"admin"` (email is `null`). `AuthService.login()` tries `findByEmail` first, then falls back to `findByUsername`.
 - **Role hierarchy**: ADMIN manages MANAGERs, MANAGER manages REGULARs, REGULAR can only access `/users/me`. `assertCanManage` also allows self-access at any role.
@@ -160,6 +160,7 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf — mocks `UserRepository` + `PasswordEncoder` |
 | `AuthControllerTest` | `POST /auth/login` (200, @Valid rejections, wrong credentials → 409), `POST /auth/logout` (204) |
 | `UserControllerTest` | All `/users` endpoints — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
+| `JwtFilterTest` | Valid token sets authentication, expired token → 401, invalidated token → 401, unknown token → 401, missing header passes through |
 
 ## Dependencies
 
