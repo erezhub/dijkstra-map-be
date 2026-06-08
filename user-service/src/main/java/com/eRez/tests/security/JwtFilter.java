@@ -41,7 +41,8 @@ public class JwtFilter extends OncePerRequestFilter {
         String rawToken = header.substring(7);
         Optional<TokenDocument> tokenDoc = tokenRepository.findByToken(rawToken);
 
-        if (tokenDoc.isEmpty() || !tokenDoc.get().isValid()) {
+        if (tokenDoc.isEmpty() || !tokenDoc.get().isValid()
+                || tokenDoc.get().getExpiresAt().before(new java.util.Date())) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
