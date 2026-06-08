@@ -30,17 +30,6 @@ public class NodeService {
     private final NodeRepository nodeRepository;
     private final CacheData cacheData;
 
-    @PostConstruct
-    private void initCache() {
-        cacheData.setNodes(nodeRepository.findAll());
-        log.info("Cache initialized with {} node(s)", cacheData.getNodes().size());
-    }
-
-    private void refreshCache() {
-        cacheData.setNodes(nodeRepository.findAll());
-        log.debug("Cache refreshed with {} node(s)", cacheData.getNodes().size());
-    }
-
     public MapResponse getMap() {
         List<NodeDocument> allDocs = cacheData.getNodes();
         Map<String, String> idToName = allDocs.stream()
@@ -85,7 +74,7 @@ public class NodeService {
 
         nodeRepository.deleteAll();
         nodeRepository.saveAll(documents);
-        refreshCache();
+        cacheData.refresh();
         log.info("Map created successfully with {} nodes", documents.size());
     }
 
@@ -153,7 +142,7 @@ public class NodeService {
         newNode.setConnections(newConnections);
         toUpdate.put(newId, newNode);
         nodeRepository.saveAll(toUpdate.values());
-        refreshCache();
+        cacheData.refresh();
         log.info("Node '{}' added with {} connection(s)", request.getName(), newConnections.size());
     }
 
@@ -205,7 +194,7 @@ public class NodeService {
         nodeDoc.setConnections(newConnections);
         toUpdate.put(nodeDoc.getId(), nodeDoc);
         nodeRepository.saveAll(toUpdate.values());
-        refreshCache();
+        cacheData.refresh();
         log.info("Node '{}' updated, {} document(s) affected", nodeName, toUpdate.size());
     }
 
@@ -225,7 +214,7 @@ public class NodeService {
 
         nodeRepository.saveAll(toUpdate);
         nodeRepository.delete(nodeDoc);
-        refreshCache();
+        cacheData.refresh();
         log.info("Node '{}' deleted, {} neighbour(s) updated", nodeName, toUpdate.size());
     }
 }

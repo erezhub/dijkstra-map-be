@@ -16,7 +16,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,7 +25,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
-import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -51,7 +49,6 @@ class NodeServiceTest {
         amsterdam = doc(ID_A, "Amsterdam", new HashMap<>(Map.of(ID_B, 7)));
         berlin    = doc(ID_B, "Berlin",    new HashMap<>(Map.of(ID_A, 7)));
         paris     = doc(ID_C, "Paris",     new HashMap<>());
-        lenient().when(nodeRepository.findAll()).thenReturn(List.of());
     }
 
     private NodeDocument doc(String id, String name, Map<String, Integer> connections) {
@@ -83,7 +80,7 @@ class NodeServiceTest {
 
         verify(nodeRepository).deleteAll();
         verify(nodeRepository).saveAll(anyList());
-        verify(cacheData).setNodes(any());
+        verify(cacheData).refresh();
     }
 
     @Test
@@ -139,7 +136,7 @@ class NodeServiceTest {
         nodeService.addNode(nodeRequest("Prague", Map.of("Berlin", 5)));
 
         verify(nodeRepository).saveAll(anyCollection());
-        verify(cacheData).setNodes(any());
+        verify(cacheData).refresh();
         assertThat(berlin.getConnections()).hasSize(2); // original + Prague
     }
 
