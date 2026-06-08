@@ -14,9 +14,9 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
-    @ExceptionHandler(MapException.class)
+    @ExceptionHandler(ServiceException.class)
     @ResponseStatus(HttpStatus.CONFLICT)
-    public ErrorResponse handleMapException(MapException ex) {
+    public ErrorResponse handleServiceException(ServiceException ex) {
         log.error("Request failed: {}", ex.getMessage());
         return new ErrorResponse(ex.getMessage());
     }

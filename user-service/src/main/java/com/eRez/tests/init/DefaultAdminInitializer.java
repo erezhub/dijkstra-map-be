@@ -1,0 +1,32 @@
+package com.eRez.tests.init;
+
+import com.eRez.tests.database.document.UserDocument;
+import com.eRez.tests.database.repository.UserRepository;
+import com.eRez.tests.dto.UserRole;
+import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Component;
+
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class DefaultAdminInitializer {
+
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+
+    @PostConstruct
+    public void init() {
+        if (userRepository.findByRole(UserRole.ADMIN).isEmpty()) {
+            UserDocument admin = new UserDocument();
+            admin.setUsername("admin");
+            admin.setEmail(null);
+            admin.setPassword(passwordEncoder.encode("admin"));
+            admin.setRole(UserRole.ADMIN);
+            userRepository.save(admin);
+            log.info("Default admin user created");
+        }
+    }
+}
