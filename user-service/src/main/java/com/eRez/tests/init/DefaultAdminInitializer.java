@@ -24,11 +24,12 @@ public class DefaultAdminInitializer {
     @PostConstruct
     public void init() {
         if (userRepository.findByRole(UserRole.ADMIN).isEmpty()) {
-            UserDocument admin = new UserDocument();
-            admin.setUsername("admin");
-            admin.setEmail(null);
-            admin.setPassword(passwordEncoder.encode(defaultPassword));
-            admin.setRole(UserRole.ADMIN);
+            UserDocument admin = new UserDocument(
+                    null,
+                    "admin",
+                    null,
+                    passwordEncoder.encode(defaultPassword),
+                    UserRole.ADMIN);
             userRepository.save(admin);
             log.info("Default admin user created");
         }

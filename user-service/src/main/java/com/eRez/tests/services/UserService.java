@@ -39,12 +39,12 @@ public class UserService {
             throw new UserException("Email already in use: " + request.getEmail());
         }
 
-        UserDocument user = new UserDocument();
-        user.setId(UUID.randomUUID().toString());
-        user.setUsername(request.getUsername());
-        user.setEmail(request.getEmail());
-        user.setPassword(passwordEncoder.encode(request.getPassword()));
-        user.setRole(targetRole);
+        UserDocument user = new UserDocument(
+            UUID.randomUUID().toString(),
+            request.getUsername(),
+            request.getEmail(),
+            passwordEncoder.encode(request.getPassword()),
+            targetRole);
         userRepository.save(user);
         log.info("User '{}' created as {} by '{}'", request.getEmail(), targetRole, callerIdentifier);
         return toResponse(user);
