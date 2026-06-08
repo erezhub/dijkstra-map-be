@@ -99,6 +99,23 @@ class AuthServiceTest {
                 .hasMessageContaining("Invalid credentials");
     }
 
+    @Test
+    void login_setsExpiresAtToNowPlusExpiration() {
+        UserDocument u = user("u1", "m@x.com", "Manager", "hashed", UserRole.MANAGER);
+        when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(u));
+        when(passwordEncoder.matches("pass", "hashed")).thenReturn(true);
+        when(tokenRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        long before = System.currentTimeMillis();
+        authService.login(loginRequest("m@x.com", "pass"));
+        long after = System.currentTimeMillis();
+
+        ArgumentCaptor<TokenDocument> captor = ArgumentCaptor.forClass(TokenDocument.class);
+        verify(tokenRepository).save(captor.capture());
+        long expiresAt = captor.getValue().getExpiresAt().getTime();
+        assertThat(expiresAt).isBetween(before + 86400000L, after + 86400000L);
+    }
+
     // ── logout ────────────────────────────────────────────────────────────────
 
     @Test
