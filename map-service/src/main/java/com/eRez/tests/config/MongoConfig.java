@@ -17,7 +17,7 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
 
     @Override
     protected String getDatabaseName() {
-        return "dijkstra-map";
+        return "dijkstra-map"; // TODO - read from application.properties
     }
 
     @Override

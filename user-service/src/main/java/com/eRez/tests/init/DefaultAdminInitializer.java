@@ -6,6 +6,7 @@ import com.eRez.tests.dto.UserRole;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
@@ -17,13 +18,16 @@ public class DefaultAdminInitializer {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
 
+    @Value("${admin.default.password}")
+    private String defaultPassword;
+
     @PostConstruct
     public void init() {
         if (userRepository.findByRole(UserRole.ADMIN).isEmpty()) {
             UserDocument admin = new UserDocument();
             admin.setUsername("admin");
             admin.setEmail(null);
-            admin.setPassword(passwordEncoder.encode("admin"));
+            admin.setPassword(passwordEncoder.encode(defaultPassword));
             admin.setRole(UserRole.ADMIN);
             userRepository.save(admin);
             log.info("Default admin user created");

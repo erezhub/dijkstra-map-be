@@ -1,8 +1,9 @@
 package com.eRez.tests.security;
 
-import com.eRez.tests.database.repository.BlacklistRepository;
-import com.eRez.tests.database.repository.UserRepository;
+import com.eRez.tests.database.document.TokenDocument;
 import com.eRez.tests.database.document.UserDocument;
+import com.eRez.tests.database.repository.TokenRepository;
+import com.eRez.tests.database.repository.UserRepository;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -24,8 +25,7 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class JwtFilter extends OncePerRequestFilter {
 
-    private final JwtUtil jwtUtil;
-    private final BlacklistRepository blacklistRepository;
+    private final TokenRepository tokenRepository;
     private final UserRepository userRepository;
 
     @Override
@@ -38,27 +38,24 @@ public class JwtFilter extends OncePerRequestFilter {
             return;
         }
 
-        String token = header.substring(7);
+        String rawToken = header.substring(7);
+        Optional<TokenDocument> tokenDoc = tokenRepository.findByToken(rawToken);
 
-        if (!jwtUtil.isTokenValid(token) || blacklistRepository.existsByToken(token)) {
+        if (tokenDoc.isEmpty() || !tokenDoc.get().isValid()) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
 
-        String subject = jwtUtil.extractSubject(token);
-        Optional<UserDocument> userOpt = userRepository.findByEmail(subject);
-        if (userOpt.isEmpty()) {
-            userOpt = userRepository.findByUsername(subject);
-        }
-
+        Optional<UserDocument> userOpt = userRepository.findById(tokenDoc.get().getUserId());
         if (userOpt.isEmpty()) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
             return;
         }
 
         UserDocument user = userOpt.get();
+        String principal = user.getEmail() != null ? user.getEmail() : user.getUsername();
         var auth = new UsernamePasswordAuthenticationToken(
-                user.getEmail() != null ? user.getEmail() : user.getUsername(),
+                principal,
                 null,
                 List.of(new SimpleGrantedAuthority("ROLE_" + user.getRole().name()))
         );
