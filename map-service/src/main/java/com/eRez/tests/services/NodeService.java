@@ -44,7 +44,7 @@ public class NodeService {
                             connections.put(targetName, weight);
                         }
                     });
-                    return new NodeResponse(doc.getName(), connections);
+                    return new NodeResponse(doc.getName(), doc.getPosition(), connections);
                 })
                 .collect(Collectors.toList());
 
@@ -64,6 +64,7 @@ public class NodeService {
             NodeDocument doc = new NodeDocument();
             doc.setId(nameToId.get(node.getName()));
             doc.setName(node.getName());
+            doc.setPosition(node.getPosition());
             Map<String, Integer> connections = new HashMap<>();
             node.getConnections().forEach((targetName, weight) ->
                 connections.put(nameToId.get(targetName), weight)
@@ -124,6 +125,7 @@ public class NodeService {
         NodeDocument newNode = new NodeDocument();
         newNode.setId(newId);
         newNode.setName(request.getName());
+        newNode.setPosition(request.getPosition());
 
         Map<String, NodeDocument> toUpdate = new HashMap<>();
         Map<String, Integer> newConnections = new HashMap<>();
@@ -192,6 +194,7 @@ public class NodeService {
         });
 
         nodeDoc.setConnections(newConnections);
+        nodeDoc.setPosition(request.getPosition());
         toUpdate.put(nodeDoc.getId(), nodeDoc);
         nodeRepository.saveAll(toUpdate.values());
         cacheData.refresh();

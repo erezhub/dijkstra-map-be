@@ -1,5 +1,6 @@
 package com.eRez.tests.dto.request;
 
+import com.eRez.tests.dto.Position;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -15,6 +16,8 @@ public class NodeRequest {
     @NotEmpty(message = "Node name cannot be empty")
     @NotBlank(message = "Node name cannot be blank")
     private String name;
+
+    private Position position;
 
     // key: target node name, value: edge weight
     @NotNull(message = "Connections cannot be null")

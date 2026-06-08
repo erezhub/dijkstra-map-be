@@ -1,5 +1,6 @@
 package com.eRez.tests.database.document;
 
+import com.eRez.tests.dto.Position;
 import lombok.Getter;
 import lombok.Setter;
 import org.springframework.data.annotation.Id;
@@ -16,6 +17,8 @@ public class NodeDocument {
     private String id;
 
     private String name;
+
+    private Position position;
 
     // key: target node id, value: edge weight
     private Map<String, Integer> connections;

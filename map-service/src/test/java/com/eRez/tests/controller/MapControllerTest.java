@@ -52,8 +52,8 @@ class MapControllerTest {
     @Test
     void getMap_returns200WithNodes() throws Exception {
         when(nodeService.getMap()).thenReturn(new MapResponse(List.of(
-                new NodeResponse("Amsterdam", Map.of("Berlin", 7)),
-                new NodeResponse("Berlin",    Map.of("Amsterdam", 7))
+                new NodeResponse("Amsterdam", null, Map.of("Berlin", 7)),
+                new NodeResponse("Berlin",    null, Map.of("Amsterdam", 7))
         )));
 
         mockMvc.perform(get("/map"))

@@ -9,10 +9,9 @@ import java.util.Map;
 @Getter
 public class MapNode {
     String id;
-    @Setter
-    Map<MapNode, Integer> connections;
-    @Setter
-    MapNode shortestPath;
+    @Setter Map<MapNode, Integer> connections;
+    @Setter MapNode shortestPath;
+    @Setter Position position;
 
     public MapNode(String id) {
         this.id = id;
