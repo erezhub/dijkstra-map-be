@@ -17,6 +17,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -29,24 +30,27 @@ public class UserController {
     private final UserService userService;
 
     @GetMapping
+    @ResponseStatus(HttpStatus.OK)
     public List<UserResponse> getUsers(@AuthenticationPrincipal UserDetails caller) {
         return userService.getUsers(caller.getUsername());
     }
 
     @PostMapping
-    public ResponseEntity<UserResponse> createUser(@AuthenticationPrincipal UserDetails caller,
+    @ResponseStatus(HttpStatus.CREATED)
+    public UserResponse createUser(@AuthenticationPrincipal UserDetails caller,
                                                     @Valid @RequestBody CreateUserRequest request) {
-        UserResponse response = userService.createUser(caller.getUsername(), request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        return userService.createUser(caller.getUsername(), request);
     }
 
     @GetMapping("/{id}")
+    @ResponseStatus(HttpStatus.OK)
     public UserResponse getUserById(@AuthenticationPrincipal UserDetails caller,
                                     @PathVariable String id) {
         return userService.getUserById(caller.getUsername(), id);
     }
 
     @PutMapping("/{id}")
+    @ResponseStatus(HttpStatus.OK)
     public UserResponse updateUser(@AuthenticationPrincipal UserDetails caller,
                                    @PathVariable String id,
                                    @RequestBody UpdateUserRequest request) {
@@ -54,18 +58,20 @@ public class UserController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteUser(@AuthenticationPrincipal UserDetails caller,
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void deleteUser(@AuthenticationPrincipal UserDetails caller,
                                            @PathVariable String id) {
         userService.deleteUser(caller.getUsername(), id);
-        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/me")
+    @ResponseStatus(HttpStatus.OK)
     public UserResponse getSelf(@AuthenticationPrincipal UserDetails caller) {
         return userService.getSelf(caller.getUsername());
     }
 
     @PutMapping("/me")
+    @ResponseStatus(HttpStatus.OK)
     public UserResponse updateSelf(@AuthenticationPrincipal UserDetails caller,
                                    @RequestBody UpdateUserRequest request) {
         return userService.updateSelf(caller.getUsername(), request);
