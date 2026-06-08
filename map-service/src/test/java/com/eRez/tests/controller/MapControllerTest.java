@@ -1,5 +1,6 @@
 package com.eRez.tests.controller;
 
+import com.eRez.tests.dto.Position;
 import com.eRez.tests.dto.response.MapResponse;
 import com.eRez.tests.dto.response.NodeResponse;
 import com.eRez.tests.dto.response.PathResponse;
@@ -47,20 +48,29 @@ class MapControllerTest {
                 .build();
     }
 
+    private Position position(double x, double y) {
+        Position p = new Position();
+        p.setX(x);
+        p.setY(y);
+        return p;
+    }
+
     // ── GET /map ──────────────────────────────────────────────────────────────
 
     @Test
     void getMap_returns200WithNodes() throws Exception {
         when(nodeService.getMap()).thenReturn(new MapResponse(List.of(
-                new NodeResponse("Amsterdam", null, Map.of("Berlin", 7)),
-                new NodeResponse("Berlin",    null, Map.of("Amsterdam", 7))
+                new NodeResponse("Amsterdam", position(1.0, 2.0), Map.of("Berlin", 7)),
+                new NodeResponse("Berlin",    null,               Map.of("Amsterdam", 7))
         )));
 
         mockMvc.perform(get("/map"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.nodes").isArray())
                 .andExpect(jsonPath("$.nodes.length()").value(2))
-                .andExpect(jsonPath("$.nodes[0].name").value("Amsterdam"));
+                .andExpect(jsonPath("$.nodes[0].name").value("Amsterdam"))
+                .andExpect(jsonPath("$.nodes[0].position.x").value(1.0))
+                .andExpect(jsonPath("$.nodes[0].position.y").value(2.0))
+                .andExpect(jsonPath("$.nodes[1].position").doesNotExist());
     }
 
     // ── POST /map ─────────────────────────────────────────────────────────────
@@ -70,8 +80,8 @@ class MapControllerTest {
         String body = """
                 {
                   "nodes": [
-                    {"name": "Amsterdam", "connections": {"Berlin": 7}},
-                    {"name": "Berlin",    "connections": {"Amsterdam": 7}}
+                    {"name": "Amsterdam", "position": {"x": 1.0, "y": 2.0}, "connections": {"Berlin": 7}},
+                    {"name": "Berlin",    "position": {"x": 3.0, "y": 4.0}, "connections": {"Amsterdam": 7}}
                   ]
                 }
                 """;
@@ -115,7 +125,7 @@ class MapControllerTest {
     @Test
     void addNode_validRequest_returns201() throws Exception {
         String body = """
-                {"name": "Prague", "connections": {"Berlin": 5}}
+                {"name": "Prague", "position": {"x": 5.0, "y": 6.0}, "connections": {"Berlin": 5}}
                 """;
 
         mockMvc.perform(post("/map/node").contentType(APPLICATION_JSON).content(body))
@@ -138,7 +148,7 @@ class MapControllerTest {
     @Test
     void updateNode_validRequest_returns200() throws Exception {
         String body = """
-                {"connections": {"Berlin": 5}}
+                {"position": {"x": 7.0, "y": 8.0}, "connections": {"Berlin": 5}}
                 """;
 
         mockMvc.perform(put("/map/node/Amsterdam").contentType(APPLICATION_JSON).content(body))

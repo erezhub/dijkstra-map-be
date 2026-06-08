@@ -3,19 +3,23 @@ package com.eRez.tests.services;
 import com.eRez.tests.data.CacheData;
 import com.eRez.tests.database.document.NodeDocument;
 import com.eRez.tests.database.repository.NodeRepository;
+import com.eRez.tests.dto.Position;
 import com.eRez.tests.dto.request.CreateMapRequest;
 import com.eRez.tests.dto.request.NodeRequest;
 import com.eRez.tests.dto.request.UpdateNodeRequest;
 import com.eRez.tests.dto.response.MapResponse;
+import com.eRez.tests.dto.response.NodeResponse;
 import com.eRez.tests.exception.MapException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +51,7 @@ class NodeServiceTest {
     @BeforeEach
     void setUp() {
         amsterdam = doc(ID_A, "Amsterdam", new HashMap<>(Map.of(ID_B, 7)));
+        amsterdam.setPosition(position(1.0, 2.0));
         berlin    = doc(ID_B, "Berlin",    new HashMap<>(Map.of(ID_A, 7)));
         paris     = doc(ID_C, "Paris",     new HashMap<>());
     }
@@ -64,6 +69,13 @@ class NodeServiceTest {
         r.setName(name);
         r.setConnections(connections);
         return r;
+    }
+
+    private Position position(double x, double y) {
+        Position p = new Position();
+        p.setX(x);
+        p.setY(y);
+        return p;
     }
 
     // ── createMap ─────────────────────────────────────────────────────────────
@@ -151,6 +163,26 @@ class NodeServiceTest {
         verifyNoInteractions(nodeRepository);
     }
 
+    @Test
+    void addNode_persistsPosition() {
+        when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam)));
+
+        NodeRequest request = nodeRequest("Prague", Map.of());
+        request.setPosition(position(5.0, 10.0));
+
+        nodeService.addNode(request);
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<Collection<NodeDocument>> captor = ArgumentCaptor.forClass(Collection.class);
+        verify(nodeRepository).saveAll(captor.capture());
+
+        NodeDocument saved = captor.getValue().stream()
+                .filter(d -> "Prague".equals(d.getName()))
+                .findFirst().orElseThrow();
+        assertThat(saved.getPosition().getX()).isEqualTo(5.0);
+        assertThat(saved.getPosition().getY()).isEqualTo(10.0);
+    }
+
     // ── updateNode ────────────────────────────────────────────────────────────
 
     @Test
@@ -190,6 +222,20 @@ class NodeServiceTest {
                 .hasMessageContaining("Node not found");
     }
 
+    @Test
+    void updateNode_updatesPosition() {
+        when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
+
+        UpdateNodeRequest request = new UpdateNodeRequest();
+        request.setConnections(Map.of("Berlin", 7));
+        request.setPosition(position(3.0, 4.0));
+
+        nodeService.updateNode("Amsterdam", request);
+
+        assertThat(amsterdam.getPosition().getX()).isEqualTo(3.0);
+        assertThat(amsterdam.getPosition().getY()).isEqualTo(4.0);
+    }
+
     // ── deleteNode ────────────────────────────────────────────────────────────
 
     @Test
@@ -222,11 +268,22 @@ class NodeServiceTest {
 
         assertThat(response.getNodes()).hasSize(2);
         assertThat(response.getNodes())
-                .extracting(n -> n.getName())
+                .extracting(NodeResponse::getName)
                 .containsExactlyInAnyOrder("Amsterdam", "Berlin");
         response.getNodes().stream()
                 .filter(n -> "Amsterdam".equals(n.getName()))
                 .findFirst()
                 .ifPresent(n -> assertThat(n.getConnections()).containsKey("Berlin"));
+    }
+
+    @Test
+    void getMap_includesPositionInResponse() {
+        when(cacheData.getNodes()).thenReturn(List.of(amsterdam)); // amsterdam has position (1,2) from setUp
+
+        MapResponse response = nodeService.getMap();
+
+        assertThat(response.getNodes().get(0).getPosition()).isNotNull();
+        assertThat(response.getNodes().get(0).getPosition().getX()).isEqualTo(1.0);
+        assertThat(response.getNodes().get(0).getPosition().getY()).isEqualTo(2.0);
     }
 }
