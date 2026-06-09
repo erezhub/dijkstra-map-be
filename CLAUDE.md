@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Two Spring Boot services sharing a `common` module:
+Three Spring Boot services sharing a `common` module:
 
 - **map-service** (port 8080) — stores a weighted graph of named nodes in MongoDB and exposes Dijkstra's shortest path algorithm over HTTP. Requires Bearer token authentication on all endpoints.
-- **user-service** (port 8081) — user management with role-based access (ADMIN → MANAGER → REGULAR) and opaque-token authentication.
+- **user-service** (port 8081) — user management with role-based access (ADMIN → MANAGER → REGULAR) and opaque-token authentication. Publishes a `user.created` RabbitMQ event after every user creation.
+- **notification-service** (no HTTP port) — RabbitMQ consumer; listens for `user.created` events and sends a welcome email via SMTP. Uses MailHog in dev.
 
 ## Build & Run
 
@@ -20,6 +21,9 @@ mvn spring-boot:run -pl map-service
 
 # Run user-service
 mvn spring-boot:run -pl user-service
+
+# Run notification-service
+mvn spring-boot:run -pl notification-service
 
 # Run all tests
 mvn test
@@ -35,12 +39,12 @@ mvn test -pl map-service -Dtest=ClassName
 mvn test -pl user-service -Dtest=ClassName#methodName
 ```
 
-MongoDB must be running. Both services connect to MongoDB; map-service uses two connections (map DB + users DB for token validation). See `application.properties` in each service for property keys.
+MongoDB must be running locally. map-service uses two connections (map DB + users DB for token validation). notification-service requires RabbitMQ and an SMTP server (MailHog on `localhost:1025` by default). See `application.properties` in each service for property keys.
 
 ## Docker
 
 ```bash
-# Start everything (MongoDB + both services + mongo-express)
+# Start everything
 docker compose up --build
 
 # Stop
@@ -49,16 +53,20 @@ docker compose down
 # Build images individually
 docker build -f DockerfileMapService -t map-service:latest .
 docker build -f DockerfileUserService -t user-service:latest .
+docker build -f DockerfileNotificationService -t notification-service:latest .
 ```
 
 | Service | Host port | Notes |
 |---|---|---|
 | `mongodb` | 27017 | Data persisted in `mongo-data` Docker volume |
+| `rabbitmq` | 5672 / 15672 | AMQP broker; management UI at `http://localhost:15672` (admin/password) |
+| `mailhog` | 1025 / 8025 | Dev SMTP catch-all; web UI at `http://localhost:8025` |
 | `map-service` | 8080 | Waits for MongoDB health check |
-| `user-service` | 8081 | Waits for MongoDB health check |
-    | `mongo-express` | 8082 | Web UI for browsing MongoDB — `http://localhost:8082` |
+| `user-service` | 8081 | Waits for MongoDB + RabbitMQ health checks |
+| `notification-service` | — | No HTTP; waits for RabbitMQ + MailHog |
+| `mongo-express` | 8082 | Web UI for browsing MongoDB — `http://localhost:8082` |
 
-**Dockerfiles**: multi-stage builds — Maven build stage (`maven:3.9-eclipse-temurin-21`) then slim runtime (`eclipse-temurin:21-jre-jammy`). Each Dockerfile copies only the pom.xml of the other service (not its `src`) so Maven can resolve the parent module graph without compiling unused code.
+**Dockerfiles**: multi-stage builds — Maven build stage (`maven:3.9-eclipse-temurin-21`) then slim runtime (`eclipse-temurin:21-jre-jammy`). Each Dockerfile copies only the pom.xml of the other services (not their `src`) so Maven can resolve the parent module graph without compiling unused code. notification-service does not depend on `common` so it only copies `common/pom.xml`.
 
 **`spring-boot-maven-plugin`** must be declared in each service's `pom.xml` for `mvn package` to produce an executable fat JAR. Without it, the plugin only exists in `pluginManagement` (from `spring-boot-starter-parent`) and `mvn package` produces a plain JAR with no `Main-Class`.
 
@@ -70,12 +78,13 @@ Each service has a `logback-spring.xml` in `src/main/resources`. Logs are writte
 |---|---|---|
 | map-service | `log/dijkstra-map.log` | `log/yyyy-MM/dijkstra-map.<i>.log.gz` |
 | user-service | `log/dijkstra-user.log` | `log/yyyy-MM/dijkstra-user.<i>.log.gz` |
+| notification-service | `log/dijkstra-notification.log` | `log/yyyy-MM/dijkstra-notification.<i>.log.gz` |
 
 Files roll when they reach 5 MB; archives are grouped into `log/YYYY-MM/` subfolders with an incrementing index suffix. The `log/` directory is in `.gitignore`.
 
 ## Architecture
 
-Multi-module Maven project (Java 21, Spring Boot 4.0.5). Modules: `common`, `map-service`, `user-service`.
+Multi-module Maven project (Java 21, Spring Boot 4.0.5). Modules: `common`, `map-service`, `user-service`, `notification-service`.
 
 ### common
 
@@ -140,7 +149,27 @@ Shared infrastructure used by both services.
 - **Role hierarchy**: ADMIN manages MANAGERs, MANAGER manages REGULARs, REGULAR can only access `/users/me`. `assertCanManage` also allows self-access at any role.
 - **Password rule**: password can only be changed when updating oneself; any other update request with a non-null `password` throws `UserException`.
 - **Sparse unique index** on `email` allows multiple `null` values (only admin has `null`).
-- Property keys: `mongodb.uri`, `mongodb.database`.
+- **RabbitMQ**: after `userRepository.save()` in `createUser()`, publishes a `UserCreatedEvent` (`{ id, username, email, role }`) to the `dijkstra.events` topic exchange with routing key `user.created`. `RabbitConfig` declares the exchange and registers `JacksonJsonMessageConverter`.
+- Property keys: `mongodb.uri`, `mongodb.database`; `rabbitmq.exchange`, `rabbitmq.routing-key.user-created`.
+
+### notification-service
+
+| Package | Purpose |
+|---|---|
+| `config` | `RabbitConfig` — declares `TopicExchange`, `Queue` (`notification.user.created`), `Binding`; registers `JacksonJsonMessageConverter` and `SimpleRabbitListenerContainerFactory` |
+| `consumer` | `UserCreatedConsumer` — `@RabbitListener` on `${rabbitmq.queue.user-created}`; calls `EmailService` |
+| `service` | `EmailService` — builds a `MimeMessage` via `MimeMessageHelper`; sets from address + display name; sends via `JavaMailSender` |
+| `dto` | `UserCreatedEvent` — `{ id, username, email, role }` plain POJO; matches what user-service publishes |
+
+**Key decisions:**
+- No dependency on `common` — avoids pulling in MongoDB, Spring Security, and token validation.
+- `spring.main.web-application-type=none` — no embedded Tomcat; AMQP listener threads keep the JVM alive.
+- Exchange is declared in both user-service and notification-service (idempotent in RabbitMQ). Queue and binding are declared only in notification-service (consumer owns its queue).
+- `JacksonJsonMessageConverter` (Spring AMQP 4.x) replaces the deprecated `Jackson2JsonMessageConverter`.
+- From address (`notification.mail.from`) and display name (`notification.mail.from-name`) are separate properties; `EmailService` combines them into `InternetAddress(from, fromName)`.
+- MailHog (`localhost:1025`) is the default SMTP target for local and Docker dev. In Docker, `SPRING_MAIL_HOST: mailhog` overrides the host to the container name.
+- `.env.example` documents the `MAIL_USERNAME` / `MAIL_PASSWORD` env vars needed for real SMTP; `.env` is gitignored.
+- Property keys: `rabbitmq.exchange`, `rabbitmq.queue.user-created`, `rabbitmq.routing-key.user-created`; `notification.mail.from`, `notification.mail.from-name`.
 
 ### Data models
 
@@ -214,7 +243,7 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | Class | What it tests |
 |---|---|
 | `AuthServiceTest` | Login via email/username fallback, wrong credentials, logout valid/not-found token, expiresAt set correctly — mocks repos + `PasswordEncoder`; injects `expirationMs` via `ReflectionTestUtils` |
-| `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf — mocks `UserRepository` + `PasswordEncoder` |
+| `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf — mocks `UserRepository` + `PasswordEncoder` + `RabbitTemplate` |
 | `AuthControllerTest` | `POST /auth/login` (200, @Valid rejections, wrong credentials → 409), `POST /auth/logout` (204) |
 | `UserControllerTest` | All `/users` endpoints — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
 | `UserDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
@@ -230,3 +259,5 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `lombok` | root | `@Getter`/`@Setter`/`@Slf4j`/`@RequiredArgsConstructor`/`@AllArgsConstructor` |
 | `spring-boot-starter-test` | root (test) | JUnit 5, Mockito, MockMvc |
 | `spring-boot-starter-security` | common | Spring Security filter chain |
+| `spring-boot-starter-amqp` | user-service, notification-service | RabbitMQ messaging |
+| `spring-boot-starter-mail` | notification-service | JavaMailSender / SMTP |
