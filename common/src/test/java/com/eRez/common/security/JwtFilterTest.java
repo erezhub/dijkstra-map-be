@@ -1,26 +1,24 @@
-package com.eRez.user.security;
+package com.eRez.common.security;
 
-import com.eRez.user.database.document.TokenDocument;
-import com.eRez.user.database.document.UserDocument;
-import com.eRez.user.database.repository.TokenRepository;
-import com.eRez.user.database.repository.UserRepository;
-import com.eRez.user.dto.UserRole;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.http.HttpServletResponse;
+import org.bson.Document;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 
 import java.util.Date;
-import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -28,34 +26,33 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class JwtFilterTest {
 
-    @Mock private TokenRepository tokenRepository;
-    @Mock private UserRepository userRepository;
+    @Mock private MongoTemplate tokenValidationMongoTemplate;
     @Mock private FilterChain filterChain;
-    @InjectMocks private JwtFilter jwtFilter;
+
+    private JwtFilter jwtFilter;
 
     @BeforeEach
-    void clearContext() {
+    void setUp() {
+        jwtFilter = new JwtFilter(tokenValidationMongoTemplate);
         SecurityContextHolder.clearContext();
     }
 
-    private TokenDocument validToken(String userId) {
-        return new TokenDocument("t1", "tok", userId, true,
-                new Date(System.currentTimeMillis() + 60_000));
+    private Document tokenDoc(boolean valid, long expiresAtOffset) {
+        Document doc = new Document();
+        doc.put("token", "tok");
+        doc.put("valid", valid);
+        doc.put("expiresAt", new Date(System.currentTimeMillis() + expiresAtOffset));
+        doc.put("userId", "u1");
+        return doc;
     }
 
-    private TokenDocument expiredToken(String userId) {
-        return new TokenDocument("t1", "tok", userId, true,
-                new Date(System.currentTimeMillis() - 1_000));
-    }
-
-    private TokenDocument invalidatedToken(String userId) {
-        return new TokenDocument("t1", "tok", userId, false,
-                new Date(System.currentTimeMillis() + 60_000));
-    }
-
-    private UserDocument manager() {
-        UserDocument u = new UserDocument("u1", "Manager", "m@x.com", "hashed", UserRole.MANAGER);
-        return u;
+    private Document userDoc() {
+        Document doc = new Document();
+        doc.put("_id", "u1");
+        doc.put("username", "Manager");
+        doc.put("email", "m@x.com");
+        doc.put("role", "MANAGER");
+        return doc;
     }
 
     // ── no Authorization header ───────────────────────────────────────────────
@@ -75,8 +72,10 @@ class JwtFilterTest {
 
     @Test
     void validToken_setsAuthentication() throws Exception {
-        when(tokenRepository.findByToken("tok")).thenReturn(Optional.of(validToken("u1")));
-        when(userRepository.findById("u1")).thenReturn(Optional.of(manager()));
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("tokens")))
+                .thenReturn(tokenDoc(true, 60_000));
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("users")))
+                .thenReturn(userDoc());
 
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addHeader("Authorization", "Bearer tok");
@@ -87,13 +86,17 @@ class JwtFilterTest {
         verify(filterChain).doFilter(req, res);
         assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
         assertThat(SecurityContextHolder.getContext().getAuthentication().isAuthenticated()).isTrue();
+        UserDetails principal = (UserDetails) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        assertThat(principal.getUsername()).isEqualTo("m@x.com");
+        assertThat(principal.getAuthorities()).anyMatch(a -> a.getAuthority().equals("ROLE_MANAGER"));
     }
 
     // ── expired token ─────────────────────────────────────────────────────────
 
     @Test
     void expiredToken_returns401() throws Exception {
-        when(tokenRepository.findByToken("tok")).thenReturn(Optional.of(expiredToken("u1")));
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("tokens")))
+                .thenReturn(tokenDoc(true, -1_000));
 
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addHeader("Authorization", "Bearer tok");
@@ -110,7 +113,8 @@ class JwtFilterTest {
 
     @Test
     void invalidatedToken_returns401() throws Exception {
-        when(tokenRepository.findByToken("tok")).thenReturn(Optional.of(invalidatedToken("u1")));
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("tokens")))
+                .thenReturn(tokenDoc(false, 60_000));
 
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addHeader("Authorization", "Bearer tok");
@@ -126,10 +130,30 @@ class JwtFilterTest {
 
     @Test
     void unknownToken_returns401() throws Exception {
-        when(tokenRepository.findByToken("ghost")).thenReturn(Optional.empty());
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("tokens")))
+                .thenReturn(null);
 
         MockHttpServletRequest req = new MockHttpServletRequest();
         req.addHeader("Authorization", "Bearer ghost");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+
+        jwtFilter.doFilterInternal(req, res, filterChain);
+
+        assertThat(res.getStatus()).isEqualTo(HttpServletResponse.SC_UNAUTHORIZED);
+        verify(filterChain, never()).doFilter(req, res);
+    }
+
+    // ── user not found ────────────────────────────────────────────────────────
+
+    @Test
+    void userNotFound_returns401() throws Exception {
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("tokens")))
+                .thenReturn(tokenDoc(true, 60_000));
+        when(tokenValidationMongoTemplate.findOne(any(), eq(Document.class), eq("users")))
+                .thenReturn(null);
+
+        MockHttpServletRequest req = new MockHttpServletRequest();
+        req.addHeader("Authorization", "Bearer tok");
         MockHttpServletResponse res = new MockHttpServletResponse();
 
         jwtFilter.doFilterInternal(req, res, filterChain);

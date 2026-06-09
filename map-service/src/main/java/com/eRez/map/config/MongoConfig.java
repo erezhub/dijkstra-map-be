@@ -12,12 +12,15 @@ import org.springframework.data.mongodb.config.AbstractMongoClientConfiguration;
 @Configuration
 public class MongoConfig extends AbstractMongoClientConfiguration {
 
-    @Value("${mongodb.uri}")
+    @Value("${mongodb.map.uri}")
     private String mongoUri;
+
+    @Value("${mongodb.map.database}")
+    private String mongoDatabase;
 
     @Override
     protected String getDatabaseName() {
-        return "dijkstra-map"; // TODO - read from application.properties
+        return mongoDatabase;
     }
 
     @Override

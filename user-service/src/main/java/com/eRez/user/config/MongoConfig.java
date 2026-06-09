@@ -8,6 +8,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.mongodb.config.AbstractMongoClientConfiguration;
+import org.springframework.data.mongodb.core.MongoTemplate;
 
 @Configuration
 public class MongoConfig extends AbstractMongoClientConfiguration {
@@ -15,9 +16,12 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
     @Value("${mongodb.uri}")
     private String mongoUri;
 
+    @Value("${mongodb.database}")
+    private String mongoDatabase;
+
     @Override
     protected String getDatabaseName() {
-        return "dijkstra-users";
+        return mongoDatabase;
     }
 
     @Override
@@ -27,5 +31,10 @@ public class MongoConfig extends AbstractMongoClientConfiguration {
                 .applyConnectionString(new ConnectionString(mongoUri))
                 .build();
         return MongoClients.create(settings);
+    }
+
+    @Bean(name = "tokenValidationMongoTemplate")
+    public MongoTemplate tokenValidationMongoTemplate(MongoTemplate mongoTemplate) {
+        return mongoTemplate;
     }
 }

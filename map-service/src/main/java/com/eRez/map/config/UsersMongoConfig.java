@@ -13,7 +13,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 @Configuration
 public class UsersMongoConfig {
 
-    @Value("${users.mongodb.uri}")
+    @Value("${mongodb.users.uri}")
     private String usersMongoUri;
 
     @Bean(name = "usersMongoClient")
@@ -23,8 +23,8 @@ public class UsersMongoConfig {
                 .build());
     }
 
-    @Bean(name = "usersMongoTemplate")
-    public MongoTemplate usersMongoTemplate(@Qualifier("usersMongoClient") MongoClient usersMongoClient) {
+    @Bean(name = "tokenValidationMongoTemplate")
+    public MongoTemplate tokenValidationMongoTemplate(@Qualifier("usersMongoClient") MongoClient usersMongoClient) {
         String database = new ConnectionString(usersMongoUri).getDatabase();
         return new MongoTemplate(usersMongoClient, database);
     }
