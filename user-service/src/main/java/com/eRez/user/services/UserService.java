@@ -3,12 +3,15 @@ package com.eRez.user.services;
 import com.eRez.user.database.document.UserDocument;
 import com.eRez.user.database.repository.UserRepository;
 import com.eRez.user.dto.UserRole;
+import com.eRez.user.dto.event.UserCreatedEvent;
 import com.eRez.user.dto.request.CreateUserRequest;
 import com.eRez.user.dto.request.UpdateUserRequest;
 import com.eRez.user.dto.response.UserResponse;
 import com.eRez.user.exception.UserException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -22,6 +25,13 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final RabbitTemplate rabbitTemplate;
+
+    @Value("${rabbitmq.exchange}")
+    private String exchange;
+
+    @Value("${rabbitmq.routing-key.user-created}")
+    private String userCreatedRoutingKey;
 
     public List<UserResponse> getUsers(String callerIdentifier) {
         UserDocument caller = loadCaller(callerIdentifier);
@@ -46,6 +56,7 @@ public class UserService {
             passwordEncoder.encode(request.getPassword()),
             targetRole);
         userRepository.save(user);
+        rabbitTemplate.convertAndSend(exchange, userCreatedRoutingKey, new UserCreatedEvent(user));
         log.info("User '{}' created as {} by '{}'", request.getEmail(), targetRole, callerIdentifier);
         return toResponse(user);
     }

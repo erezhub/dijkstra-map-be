@@ -10,6 +10,9 @@ target/
 *.iml
 *.ipr
 
+### Secrets ###
+.env
+
 ### Logs ###
 *.log
 log/

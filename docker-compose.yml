@@ -18,6 +18,31 @@ services:
       retries: 5
       start_period: 20s
 
+  rabbitmq:
+    image: rabbitmq:4-management
+    container_name: rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: password
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mailhog:
+    image: mailhog/mailhog
+    container_name: mailhog
+    restart: unless-stopped
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
   map-service:
     image: map-service:latest
     build:
@@ -49,9 +74,33 @@ services:
       MONGODB_DATABASE: dijkstra-users
       TOKEN_EXPIRATION_MS: 86400000
       ADMIN_DEFAULT_PASSWORD: admin
+      SPRING_RABBITMQ_HOST: rabbitmq
+      RABBITMQ_EXCHANGE: dijkstra.events
+      RABBITMQ_ROUTING__KEY_USER__CREATED: user.created
     depends_on:
       mongodb:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  notification-service:
+    image: notification-service:latest
+    build:
+      context: .
+      dockerfile: DockerfileNotificationService
+    container_name: notification-service
+    restart: unless-stopped
+    environment:
+      SPRING_RABBITMQ_HOST: rabbitmq
+      SPRING_MAIL_HOST: mailhog
+      RABBITMQ_EXCHANGE: dijkstra.events
+      RABBITMQ_QUEUE_USER__CREATED: notification.user.created
+      RABBITMQ_ROUTING__KEY_USER__CREATED: user.created
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
 
   mongo-express:
     image: mongo-express:latest

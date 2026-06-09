@@ -1,0 +1,42 @@
+package com.eRez.notification.service;
+
+import com.eRez.notification.dto.UserCreatedEvent;
+import jakarta.mail.internet.InternetAddress;
+import jakarta.mail.internet.MimeMessage;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
+import org.springframework.stereotype.Service;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class EmailService {
+
+    private final JavaMailSender mailSender;
+
+    @Value("${notification.mail.from}")
+    private String from;
+
+    @Value("${notification.mail.from-name}")
+    private String fromName;
+
+    public void sendWelcomeEmail(UserCreatedEvent event) throws Exception {
+        MimeMessage mimeMessage = mailSender.createMimeMessage();
+        MimeMessageHelper helper = new MimeMessageHelper(mimeMessage);
+        helper.setFrom(new InternetAddress(from, fromName));
+        helper.setTo(event.getEmail());
+        helper.setSubject("Welcome to Dijkstra Map");
+        helper.setText(
+                "Hi " + event.getUsername() + ",\n\n" +
+                "Your account has been created.\n\n" +
+                "Role: " + event.getRole() + "\n" +
+                "Email: " + event.getEmail() + "\n\n" +
+                "You can now log in using your email and the password provided by your administrator."
+        );
+        mailSender.send(mimeMessage);
+        log.info("Welcome email sent to '{}'", event.getEmail());
+    }
+}

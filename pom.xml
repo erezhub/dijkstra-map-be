@@ -12,6 +12,7 @@
         <module>common</module>
         <module>map-service</module>
         <module>user-service</module>
+        <module>notification-service</module>
     </modules>
 
     <parent>

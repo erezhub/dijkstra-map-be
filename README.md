@@ -46,7 +46,10 @@ docker compose down
 |---|---|
 | map-service | http://localhost:8080 |
 | user-service | http://localhost:8081 |
+| notification-service | — (background consumer, no HTTP) |
 | mongo-express (DB browser) | http://localhost:8082 |
+| RabbitMQ management | http://localhost:15672 |
+| MailHog (dev mail UI) | http://localhost:8025 |
 
 ---
 
