@@ -50,6 +50,19 @@ docker compose down
 
 ---
 
+## Logging
+
+Each service writes logs to console and to a rolling file under a `log/` directory relative to the working directory:
+
+| Service | Active log | Archives |
+|---|---|---|
+| map-service | `log/dijkstra-map.log` | `log/YYYY-MM/dijkstra-map.<index>.log.gz` |
+| user-service | `log/dijkstra-user.log` | `log/YYYY-MM/dijkstra-user.<index>.log.gz` |
+
+Files roll when they reach 5 MB and are archived into a monthly subfolder with an incrementing index.
+
+---
+
 ## Authentication
 
 All map-service endpoints and all `/users` endpoints require a Bearer token:
