@@ -37,6 +37,31 @@ mvn test -pl user-service -Dtest=ClassName#methodName
 
 MongoDB must be running. Both services connect to MongoDB; map-service uses two connections (map DB + users DB for token validation). See `application.properties` in each service for property keys.
 
+## Docker
+
+```bash
+# Start everything (MongoDB + both services + mongo-express)
+docker compose up --build
+
+# Stop
+docker compose down
+
+# Build images individually
+docker build -f DockerfileMapService -t map-service:latest .
+docker build -f DockerfileUserService -t user-service:latest .
+```
+
+| Service | Host port | Notes |
+|---|---|---|
+| `mongodb` | 27017 | Data persisted in `mongo-data` Docker volume |
+| `map-service` | 8080 | Waits for MongoDB health check |
+| `user-service` | 8081 | Waits for MongoDB health check |
+    | `mongo-express` | 8082 | Web UI for browsing MongoDB — `http://localhost:8082` |
+
+**Dockerfiles**: multi-stage builds — Maven build stage (`maven:3.9-eclipse-temurin-21`) then slim runtime (`eclipse-temurin:21-jre-jammy`). Each Dockerfile copies only the pom.xml of the other service (not its `src`) so Maven can resolve the parent module graph without compiling unused code.
+
+**`spring-boot-maven-plugin`** must be declared in each service's `pom.xml` for `mvn package` to produce an executable fat JAR. Without it, the plugin only exists in `pluginManagement` (from `spring-boot-starter-parent`) and `mvn package` produces a plain JAR with no `Main-Class`.
+
 ## Architecture
 
 Multi-module Maven project (Java 21, Spring Boot 4.0.5). Modules: `common`, `map-service`, `user-service`.
