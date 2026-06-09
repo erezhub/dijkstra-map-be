@@ -98,7 +98,7 @@ Shared infrastructure used by both services.
 | `init` | `DefaultAdminInitializer` — creates the admin user on startup if none exists |
 
 **Key decisions:**
-- **Tokens are opaque UUIDs** stored in `tokens` collection with a `valid` boolean and a TTL index (`@Indexed(expireAfterSeconds = 0)` on `expiresAt`). Validation = DB lookup only. `JwtFilter` (in common) checks both `valid == true` and `expiresAt.after(now)` — MongoDB's TTL cleanup runs every ~60 s so the document may still exist after expiration.
+- **Tokens are opaque UUIDs** stored in `tokens` collection with a `valid` boolean and a TTL index (`@Indexed(expireAfter = "0s")` on `expiresAt`). Validation = DB lookup only. `JwtFilter` (in common) checks both `valid == true` and `expiresAt.after(now)` — MongoDB's TTL cleanup runs every ~60 s so the document may still exist after expiration.
 - **`JwtFilter`** (common) sets a Spring Security `UserDetails` object as the principal so `@AuthenticationPrincipal UserDetails` resolves correctly in controllers.
 - **Login identifier**: MANAGER/REGULAR log in with email; ADMIN logs in with username `"admin"` (email is `null`). `AuthService.login()` tries `findByEmail` first, then falls back to `findByUsername`.
 - **Role hierarchy**: ADMIN manages MANAGERs, MANAGER manages REGULARs, REGULAR can only access `/users/me`. `assertCanManage` also allows self-access at any role.
@@ -161,6 +161,7 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | Class | What it tests |
 |---|---|
 | `JwtFilterTest` | Valid token sets UserDetails authentication, expired → 401, invalidated → 401, unknown → 401, user not found → 401, missing header passes through — mocks `MongoTemplate` |
+| `AuditingMongoRepositoryTest` | `save()` calls `onBeforeSave()` on `Auditable` entities; sets `createdAt`+`updatedAt` on new entity; preserves `createdAt` and advances `updatedAt` on existing entity — mocks `MongoEntityInformation` + `MongoOperations` |
 
 ### map-service (`map-service/src/test/`)
 
@@ -170,6 +171,7 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `PathServiceTest` | Dijkstra correctness, node-not-found and no-path errors — mocks `CacheData` |
 | `MapControllerTest` | HTTP status codes, JSON shape, `@Valid` rejections, `MapException` → 409 |
 | `CacheDataTest` | `refresh()` replaces (not appends), list is unmodifiable, concurrent stress test |
+| `NodeDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
 
 ### user-service (`user-service/src/test/`)
 
@@ -179,6 +181,8 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf — mocks `UserRepository` + `PasswordEncoder` |
 | `AuthControllerTest` | `POST /auth/login` (200, @Valid rejections, wrong credentials → 409), `POST /auth/logout` (204) |
 | `UserControllerTest` | All `/users` endpoints — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
+| `UserDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
+| `TokenDocumentTest` | `onBeforeSave()` sets `createdAt` on first call; preserves it on subsequent calls |
 
 ## Dependencies
 
