@@ -62,6 +62,17 @@ docker build -f DockerfileUserService -t user-service:latest .
 
 **`spring-boot-maven-plugin`** must be declared in each service's `pom.xml` for `mvn package` to produce an executable fat JAR. Without it, the plugin only exists in `pluginManagement` (from `spring-boot-starter-parent`) and `mvn package` produces a plain JAR with no `Main-Class`.
 
+## Logging
+
+Each service has a `logback-spring.xml` in `src/main/resources`. Logs are written to both console and a rolling file:
+
+| Service | Active log | Archive pattern |
+|---|---|---|
+| map-service | `log/dijkstra-map.log` | `log/yyyy-MM/dijkstra-map.<i>.log.gz` |
+| user-service | `log/dijkstra-user.log` | `log/yyyy-MM/dijkstra-user.<i>.log.gz` |
+
+Files roll when they reach 5 MB; archives are grouped into `log/YYYY-MM/` subfolders with an incrementing index suffix. The `log/` directory is in `.gitignore`.
+
 ## Architecture
 
 Multi-module Maven project (Java 21, Spring Boot 4.0.5). Modules: `common`, `map-service`, `user-service`.
@@ -74,7 +85,7 @@ Shared infrastructure used by both services.
 |---|---|
 | `exception` | `ServiceException` (base `RuntimeException`); `GlobalExceptionHandler` (`@RestControllerAdvice`, handles `ServiceException` + `MethodArgumentNotValidException` → 409) |
 | `dto/response` | `ErrorResponse` — `{ "message": "..." }` |
-| `config` | `SecurityConfig` — conditional `SecurityFilterChain` beans + `PasswordEncoder` + CORS |
+| `config` | `SecurityConfig` — conditional `SecurityFilterChain` beans + `PasswordEncoder` + CORS; `MongoTypeMapperConfig` — `BeanPostProcessor` that removes the `_class` field from all MongoDB documents |
 | `security` | `JwtFilter` — `@Component("jwtFilter")`, validates tokens and loads user via `tokenValidationMongoTemplate` |
 | `data` | `Auditable` — interface with `onBeforeSave()` for timestamp logic; `AuditingMongoRepository` — custom repository base class |
 
