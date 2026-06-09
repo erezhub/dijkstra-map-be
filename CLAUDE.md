@@ -51,10 +51,13 @@ Shared infrastructure used by both services.
 | `dto/response` | `ErrorResponse` — `{ "message": "..." }` |
 | `config` | `SecurityConfig` — conditional `SecurityFilterChain` beans + `PasswordEncoder` + CORS |
 | `security` | `JwtFilter` — `@Component("jwtFilter")`, validates tokens and loads user via `tokenValidationMongoTemplate` |
+| `data` | `Auditable` — interface with `onBeforeSave()` for timestamp logic; `AuditingMongoRepository` — custom repository base class |
 
 **SecurityConfig conditional logic**: `authenticatedFilterChain` is `@ConditionalOnBean(name = "jwtFilter")` — active in both services because both scan `com.eRez.common` and pick up the common `JwtFilter`. map-service gets authenticated behaviour; `openFilterChain` (`@ConditionalOnMissingBean`) is the fallback if the bean is absent.
 
 **JwtFilter** (common): uses `@Qualifier("tokenValidationMongoTemplate") MongoTemplate` to query the `tokens` and `users` collections in `dijkstra-users`. Validates `valid == true` and `expiresAt.after(now)`, then loads the user document to build a `UserDetails` principal (email or username as identifier, `ROLE_X` authority). Each service must expose a `"tokenValidationMongoTemplate"` bean pointing to `dijkstra-users`.
+
+**Auditing**: `Auditable` interface declares `onBeforeSave()`. Each document implements its own timestamp logic there. `AuditingMongoRepository` overrides `save()` to invoke this hook — bypassing Spring Data MongoDB 4.2+'s `bulkWrite` path which skips entity callbacks. Each service's `MongoConfig` registers it via `@EnableMongoRepositories(repositoryBaseClass = AuditingMongoRepository.class)`.
 
 ### map-service
 
@@ -106,11 +109,14 @@ Shared infrastructure used by both services.
 ### Data models
 
 ```
-NodeDocument  { id: String (UUID), name: String, position: Position, connections: Map<String, Integer> }
+NodeDocument  { id: String (UUID), name: String, position: Position, connections: Map<String, Integer>,
+                createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
 Position      { x: double, y: double }
 
-UserDocument  { id: String (UUID), username: String, email: String (sparse unique), password: String (BCrypt), role: UserRole }
-TokenDocument { id: String, token: String (unique UUID), userId: String, valid: boolean, expiresAt: Date (TTL) }
+UserDocument  { id: String (UUID), username: String, email: String (sparse unique), password: String (BCrypt), role: UserRole,
+                createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
+TokenDocument { id: String, token: String (unique UUID), userId: String, valid: boolean, expiresAt: Date (TTL),
+                createdAt: LocalDateTime (UTC) }
 ```
 
 ## REST API
