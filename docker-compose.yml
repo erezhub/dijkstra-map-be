@@ -1,0 +1,72 @@
+services:
+
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  map-service:
+    image: map-service:latest
+    build:
+      context: .
+      dockerfile: DockerfileMapService
+    container_name: map-service
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      MONGODB_MAP_URI: mongodb://admin:password@mongodb:27017/dijkstra-map?authSource=admin
+      MONGODB_MAP_DATABASE: dijkstra-map
+      MONGODB_USERS_URI: mongodb://admin:password@mongodb:27017/dijkstra-users?authSource=admin
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  user-service:
+    image: user-service:latest
+    build:
+      context: .
+      dockerfile: DockerfileUserService
+    container_name: user-service
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      MONGODB_URI: mongodb://admin:password@mongodb:27017/dijkstra-users?authSource=admin
+      MONGODB_DATABASE: dijkstra-users
+      TOKEN_EXPIRATION_MS: 86400000
+      ADMIN_DEFAULT_PASSWORD: admin
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo-express
+    restart: unless-stopped
+    ports:
+      - "8082:8081"
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: password
+      ME_CONFIG_MONGODB_URL: mongodb://admin:password@mongodb:27017/
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
