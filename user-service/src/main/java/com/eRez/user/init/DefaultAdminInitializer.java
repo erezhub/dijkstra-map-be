@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
+
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -24,13 +25,7 @@ public class DefaultAdminInitializer {
     @PostConstruct
     public void init() {
         if (userRepository.findByRole(UserRole.ADMIN).isEmpty()) {
-            UserDocument admin = new UserDocument(
-                    null,
-                    "admin",
-                    null,
-                    passwordEncoder.encode(defaultPassword),
-                    UserRole.ADMIN);
-            userRepository.save(admin);
+            userRepository.save(new UserDocument(null, "admin", null, passwordEncoder.encode(defaultPassword), UserRole.ADMIN));
             log.info("Default admin user created");
         }
     }
