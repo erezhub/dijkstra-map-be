@@ -28,7 +28,7 @@ public class TokenDocument implements Auditable {
 
     private boolean valid;
 
-    @Indexed(expireAfterSeconds = 0)
+    @Indexed(expireAfter = "0s")
     private Date expiresAt;
 
     private LocalDateTime createdAt;
