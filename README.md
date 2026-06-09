@@ -1,9 +1,10 @@
 # Dijkstra Map Backend
 
-Two Spring Boot microservices sharing a `common` module:
+Three Spring Boot services sharing a `common` module:
 
 - **map-service** (port 8080) — stores a weighted graph of named nodes in MongoDB and exposes Dijkstra's shortest-path algorithm over HTTP.
 - **user-service** (port 8081) — user management with role-based access control (ADMIN → MANAGER → REGULAR) and opaque-token authentication.
+- **notification-service** (no HTTP port) — listens for `user.created` events from RabbitMQ and sends a welcome email to every newly created user.
 
 ---
 
@@ -11,6 +12,7 @@ Two Spring Boot microservices sharing a `common` module:
 
 - Java 21, Maven 3.9+ (for local development)
 - Docker & Docker Compose (for containerised deployment)
+- MongoDB, RabbitMQ, and an SMTP server (local dev uses MailHog — included in Docker Compose)
 
 ---
 
@@ -25,11 +27,14 @@ mvn clean install
 # Start map-service (MongoDB must be running)
 mvn spring-boot:run -pl map-service
 
-# Start user-service (MongoDB must be running)
+# Start user-service (MongoDB + RabbitMQ must be running)
 mvn spring-boot:run -pl user-service
+
+# Start notification-service (RabbitMQ + SMTP must be running)
+mvn spring-boot:run -pl notification-service
 ```
 
-Both services expect MongoDB at `localhost:27017` with credentials `admin / password`.  
+All services expect MongoDB at `localhost:27017` and RabbitMQ at `localhost:5672`, both with credentials `admin / password`. notification-service expects an SMTP server at `localhost:1025` (MailHog by default).  
 See each module's `src/main/resources/application.properties` for all property keys.
 
 ### Docker Compose
@@ -61,6 +66,7 @@ Each service writes logs to console and to a rolling file under a `log/` directo
 |---|---|---|
 | map-service | `log/dijkstra-map.log` | `log/YYYY-MM/dijkstra-map.<index>.log.gz` |
 | user-service | `log/dijkstra-user.log` | `log/YYYY-MM/dijkstra-user.<index>.log.gz` |
+| notification-service | `log/dijkstra-notification.log` | `log/YYYY-MM/dijkstra-notification.<index>.log.gz` |
 
 Files roll when they reach 5 MB and are archived into a monthly subfolder with an incrementing index.
 
@@ -226,6 +232,23 @@ Updates the caller's own profile. All fields are optional. Available to all role
 **Request** — same shape as `PUT /users/{id}`
 
 **Response 200** — updated user object
+
+---
+
+## Notifications
+
+When a user is created via `POST /users`, user-service publishes a `user.created` event to RabbitMQ. notification-service consumes it and sends a welcome email to the new user's address.
+
+In development (Docker Compose), emails are caught by MailHog and never leave your machine. Open **http://localhost:8025** to inspect them.
+
+To send real emails, configure SMTP credentials via environment variables:
+
+```bash
+MAIL_USERNAME=you@example.com
+MAIL_PASSWORD=your-smtp-password
+```
+
+Copy `.env.example` to `.env` and fill in the values — Docker Compose picks them up automatically.
 
 ---
 
