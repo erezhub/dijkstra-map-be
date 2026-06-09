@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Two Spring Boot services sharing a `common` module:
 
-- **map-service** (port 8080) — stores a weighted graph of named nodes in MongoDB and exposes Dijkstra's shortest path algorithm over HTTP.
+- **map-service** (port 8080) — stores a weighted graph of named nodes in MongoDB and exposes Dijkstra's shortest path algorithm over HTTP. Requires Bearer token authentication on all endpoints.
 - **user-service** (port 8081) — user management with role-based access (ADMIN → MANAGER → REGULAR) and opaque-token authentication.
 
 ## Build & Run
@@ -35,7 +35,7 @@ mvn test -pl map-service -Dtest=ClassName
 mvn test -pl user-service -Dtest=ClassName#methodName
 ```
 
-MongoDB must be running. Each service has its own `application.properties` with `mongodb.uri` picked up by its `MongoConfig` via `@Value("${mongodb.uri}")`. map-service uses database `dijkstra`, user-service uses `dijkstra-users`.
+MongoDB must be running. Both services connect to MongoDB; map-service uses two connections (map DB + users DB for token validation). See `application.properties` in each service for property keys.
 
 ## Architecture
 
@@ -50,8 +50,11 @@ Shared infrastructure used by both services.
 | `exception` | `ServiceException` (base `RuntimeException`); `GlobalExceptionHandler` (`@RestControllerAdvice`, handles `ServiceException` + `MethodArgumentNotValidException` → 409) |
 | `dto/response` | `ErrorResponse` — `{ "message": "..." }` |
 | `config` | `SecurityConfig` — conditional `SecurityFilterChain` beans + `PasswordEncoder` + CORS |
+| `security` | `JwtFilter` — `@Component("jwtFilter")`, validates tokens and loads user via `tokenValidationMongoTemplate` |
 
-**SecurityConfig conditional logic**: `authenticatedFilterChain` is `@ConditionalOnBean(name = "jwtFilter")` — only active in user-service, which defines that bean. map-service gets `openFilterChain` (`@ConditionalOnMissingBean`) which permits all requests, leaving map-service tests and behaviour unchanged.
+**SecurityConfig conditional logic**: `authenticatedFilterChain` is `@ConditionalOnBean(name = "jwtFilter")` — active in both services because both scan `com.eRez.common` and pick up the common `JwtFilter`. map-service gets authenticated behaviour; `openFilterChain` (`@ConditionalOnMissingBean`) is the fallback if the bean is absent.
+
+**JwtFilter** (common): uses `@Qualifier("tokenValidationMongoTemplate") MongoTemplate` to query the `tokens` and `users` collections in `dijkstra-users`. Validates `valid == true` and `expiresAt.after(now)`, then loads the user document to build a `UserDetails` principal (email or username as identifier, `ROLE_X` authority). Each service must expose a `"tokenValidationMongoTemplate"` bean pointing to `dijkstra-users`.
 
 ### map-service
 
@@ -66,13 +69,15 @@ Shared infrastructure used by both services.
 | `dto/request` | `CreateMapRequest`, `NodeRequest`, `UpdateNodeRequest` |
 | `dto/response` | `MapResponse`, `NodeResponse`, `PathResponse`, `PathSegment` |
 | `exception` | `MapException extends ServiceException` |
-| `config` | `MongoConfig` |
+| `config` | `MongoConfig` (primary, `dijkstra-map`); `UsersMongoConfig` (secondary, `dijkstra-users`) |
 
 **Key decisions:**
 - `NodeDocument` stores connections as `Map<String, Integer>` (MongoDB ID → weight). Names are never stored as connection keys.
 - All connections are bidirectional — every write mirrors changes to neighbour documents.
 - `CacheData` owns its own lifecycle (`@PostConstruct`). The `nodes` field is a `volatile` unmodifiable snapshot; reads need no locking. `NodeService` calls `cacheData.refresh()` after every write. Read endpoints never hit MongoDB.
 - `MapService.java` is an empty deprecated stub (cannot be deleted); ignore it.
+- `UsersMongoConfig` exposes `"usersMongoClient"` and `"tokenValidationMongoTemplate"` beans (connecting to `dijkstra-users`) so the common `JwtFilter` can validate tokens.
+- Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary).
 
 ### user-service
 
@@ -80,23 +85,23 @@ Shared infrastructure used by both services.
 |---|---|
 | `controller` | `AuthController` (`/auth`), `UserController` (`/users`) |
 | `services` | `AuthService` — login/logout; `UserService` — CRUD with role enforcement |
-| `security` | `JwtFilter` — `@Component("jwtFilter")`, validates tokens via DB lookup |
 | `database/document` | `UserDocument` (`users` collection), `TokenDocument` (`tokens` collection) |
 | `database/repository` | `UserRepository`, `TokenRepository` |
 | `dto` | `UserRole` enum (`ADMIN`, `MANAGER`, `REGULAR`) |
 | `dto/request` | `LoginRequest`, `CreateUserRequest`, `UpdateUserRequest` |
 | `dto/response` | `UserResponse`, `TokenResponse` |
 | `exception` | `UserException extends ServiceException` |
-| `config` | `MongoConfig` |
+| `config` | `MongoConfig` — also exposes `"tokenValidationMongoTemplate"` aliasing the primary template |
 | `init` | `DefaultAdminInitializer` — creates the admin user on startup if none exists |
 
 **Key decisions:**
-- **Tokens are opaque UUIDs** stored in `tokens` collection with a `valid` boolean and a TTL index (`@Indexed(expireAfterSeconds = 0)` on `expiresAt`). Validation = DB lookup only; no JWT secret is needed at validation time. `JwtFilter` checks both `valid == true` and `expiresAt.after(now)` — MongoDB's TTL cleanup runs every ~60 s so the document may still exist after expiration.
-- **`JwtFilter`** sets a Spring Security `UserDetails` object (not a plain `String`) as the principal so `@AuthenticationPrincipal UserDetails` resolves correctly in controllers.
+- **Tokens are opaque UUIDs** stored in `tokens` collection with a `valid` boolean and a TTL index (`@Indexed(expireAfterSeconds = 0)` on `expiresAt`). Validation = DB lookup only. `JwtFilter` (in common) checks both `valid == true` and `expiresAt.after(now)` — MongoDB's TTL cleanup runs every ~60 s so the document may still exist after expiration.
+- **`JwtFilter`** (common) sets a Spring Security `UserDetails` object as the principal so `@AuthenticationPrincipal UserDetails` resolves correctly in controllers.
 - **Login identifier**: MANAGER/REGULAR log in with email; ADMIN logs in with username `"admin"` (email is `null`). `AuthService.login()` tries `findByEmail` first, then falls back to `findByUsername`.
 - **Role hierarchy**: ADMIN manages MANAGERs, MANAGER manages REGULARs, REGULAR can only access `/users/me`. `assertCanManage` also allows self-access at any role.
 - **Password rule**: password can only be changed when updating oneself; any other update request with a non-null `password` throws `UserException`.
 - **Sparse unique index** on `email` allows multiple `null` values (only admin has `null`).
+- Property keys: `mongodb.uri`, `mongodb.database`.
 
 ### Data models
 
@@ -113,6 +118,8 @@ TokenDocument { id: String, token: String (unique UUID), userId: String, valid: 
 Errors always return `409 Conflict` with `{ "message": "..." }`.
 
 ### map-service (`/map`)
+
+All endpoints require `Authorization: Bearer <token>`.
 
 | Method | Path | Description |
 |---|---|---|
@@ -143,6 +150,12 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 
 `@WebMvcTest` was removed in Spring Boot 4.x — all controller tests use `MockMvcBuilders.standaloneSetup()`.
 
+### common (`common/src/test/`)
+
+| Class | What it tests |
+|---|---|
+| `JwtFilterTest` | Valid token sets UserDetails authentication, expired → 401, invalidated → 401, unknown → 401, user not found → 401, missing header passes through — mocks `MongoTemplate` |
+
 ### map-service (`map-service/src/test/`)
 
 | Class | What it tests |
@@ -156,11 +169,10 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 
 | Class | What it tests |
 |---|---|
-| `AuthServiceTest` | Login via email/username fallback, wrong credentials, logout valid/not-found token — mocks repos + `PasswordEncoder`; injects `expirationMs` via `ReflectionTestUtils` |
+| `AuthServiceTest` | Login via email/username fallback, wrong credentials, logout valid/not-found token, expiresAt set correctly — mocks repos + `PasswordEncoder`; injects `expirationMs` via `ReflectionTestUtils` |
 | `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf — mocks `UserRepository` + `PasswordEncoder` |
 | `AuthControllerTest` | `POST /auth/login` (200, @Valid rejections, wrong credentials → 409), `POST /auth/logout` (204) |
 | `UserControllerTest` | All `/users` endpoints — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
-| `JwtFilterTest` | Valid token sets authentication, expired token → 401, invalidated token → 401, unknown token → 401, missing header passes through |
 
 ## Dependencies
 
