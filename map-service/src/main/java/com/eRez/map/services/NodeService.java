@@ -3,15 +3,17 @@ package com.eRez.map.services;
 import com.eRez.map.data.CacheData;
 import com.eRez.map.database.document.NodeDocument;
 import com.eRez.map.database.repository.NodeRepository;
+import com.eRez.map.dto.event.NodeChangedEvent;
 import com.eRez.map.dto.request.CreateMapRequest;
 import com.eRez.map.dto.request.NodeRequest;
 import com.eRez.map.dto.request.UpdateNodeRequest;
 import com.eRez.map.dto.response.MapResponse;
 import com.eRez.map.dto.response.NodeResponse;
 import com.eRez.map.exception.MapException;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -29,6 +31,11 @@ public class NodeService {
 
     private final NodeRepository nodeRepository;
     private final CacheData cacheData;
+    private final RouteService routeService;
+    private final RabbitTemplate rabbitTemplate;
+
+    @Value("${rabbitmq.exchange}")
+    private String exchange;
 
     public MapResponse getMap() {
         List<NodeDocument> allDocs = cacheData.getNodes();
@@ -73,6 +80,7 @@ public class NodeService {
             documents.add(doc);
         }
 
+        routeService.deleteAll();
         nodeRepository.deleteAll();
         nodeRepository.saveAll(documents);
         cacheData.refresh();
@@ -145,6 +153,9 @@ public class NodeService {
         toUpdate.put(newId, newNode);
         nodeRepository.saveAll(toUpdate.values());
         cacheData.refresh();
+
+        routeService.markAllStale();
+        rabbitTemplate.convertAndSend(exchange, "map.node.added", new NodeChangedEvent("NODE_ADDED", null));
         log.info("Node '{}' added with {} connection(s)", request.getName(), newConnections.size());
     }
 
@@ -198,6 +209,9 @@ public class NodeService {
         toUpdate.put(nodeDoc.getId(), nodeDoc);
         nodeRepository.saveAll(toUpdate.values());
         cacheData.refresh();
+
+        routeService.markAllStale();
+        rabbitTemplate.convertAndSend(exchange, "map.node.updated", new NodeChangedEvent("NODE_UPDATED", nodeName));
         log.info("Node '{}' updated, {} document(s) affected", nodeName, toUpdate.size());
     }
 
@@ -218,6 +232,10 @@ public class NodeService {
         nodeRepository.saveAll(toUpdate);
         nodeRepository.delete(nodeDoc);
         cacheData.refresh();
+
+        routeService.deleteByEndpoint(nodeName);
+        routeService.markStaleByPath(nodeName);
+        rabbitTemplate.convertAndSend(exchange, "map.node.deleted", new NodeChangedEvent("NODE_DELETED_INTERMEDIATE", nodeName));
         log.info("Node '{}' deleted, {} neighbour(s) updated", nodeName, toUpdate.size());
     }
 }

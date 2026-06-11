@@ -61,7 +61,7 @@ docker build -f DockerfileNotificationService -t notification-service:latest .
 | `mongodb` | 27017 | Data persisted in `mongo-data` Docker volume |
 | `rabbitmq` | 5672 / 15672 | AMQP broker; management UI at `http://localhost:15672` (admin/password) |
 | `mailhog` | 1025 / 8025 | Dev SMTP catch-all; web UI at `http://localhost:8025` |
-| `map-service` | 8080 | Waits for MongoDB health check |
+| `map-service` | 8080 | Waits for MongoDB + RabbitMQ health checks |
 | `user-service` | 8081 | Waits for MongoDB + RabbitMQ health checks |
 | `notification-service` | — | No HTTP; waits for RabbitMQ + MailHog |
 | `mongo-express` | 8082 | Web UI for browsing MongoDB — `http://localhost:8082` |
@@ -108,16 +108,18 @@ Shared infrastructure used by both services.
 
 | Package | Purpose |
 |---|---|
-| `controller` | `MapController` — single REST controller |
-| `services` | `NodeService` — CRUD + bidirectional connection logic; `PathService` — Dijkstra algorithm |
+| `controller` | `MapController` — node/path endpoints; `RouteController` — saved-route endpoints |
+| `services` | `NodeService` — CRUD + bidirectional connection logic; `PathService` — Dijkstra algorithm; `RouteService` — saved route CRUD + stale/recalculation logic |
+| `consumer` | `RouteRecalculationConsumer` — `@RabbitListener`; calls `routeService.recalculateAllStale()` on any `map.node.*` event |
 | `data` | `CacheData` — thread-safe in-memory cache, owns its own lifecycle |
-| `database/document` | `NodeDocument` — MongoDB document (`nodes` collection) |
-| `database/repository` | `NodeRepository` — `MongoRepository`; includes `findByName` |
+| `database/document` | `NodeDocument` (`nodes` collection); `RouteDocument` (`routes` collection) |
+| `database/repository` | `NodeRepository`; `RouteRepository` — includes `findRoute` (bidirectional), `findByPathContaining`, `findByStaleTrue`, `deleteByNodeAOrNodeB` |
 | `dto` | `MapNode` — in-memory algorithm node; `Position` — `{ x, y }` coordinate pair |
+| `dto/event` | `NodeChangedEvent` — RabbitMQ event payload `{ type, nodeName }` |
 | `dto/request` | `CreateMapRequest`, `NodeRequest`, `UpdateNodeRequest` |
-| `dto/response` | `MapResponse`, `NodeResponse`, `PathResponse`, `PathSegment` |
+| `dto/response` | `MapResponse`, `NodeResponse`, `PathResponse`, `PathSegment`, `SavedRouteResponse` |
 | `exception` | `MapException extends ServiceException` |
-| `config` | `MongoConfig` (primary, `dijkstra-map`); `UsersMongoConfig` (secondary, `dijkstra-users`) |
+| `config` | `MongoConfig` (primary, `dijkstra-map`); `UsersMongoConfig` (secondary, `dijkstra-users`); `MapRabbitConfig` — exchange, queue, binding, `JacksonJsonMessageConverter` |
 
 **Key decisions:**
 - `NodeDocument` stores connections as `Map<String, Integer>` (MongoDB ID → weight). Names are never stored as connection keys.
@@ -125,7 +127,14 @@ Shared infrastructure used by both services.
 - `CacheData` owns its own lifecycle (`@PostConstruct`). The `nodes` field is a `volatile` unmodifiable snapshot; reads need no locking. `NodeService` calls `cacheData.refresh()` after every write. Read endpoints never hit MongoDB.
 - `MapService.java` is an empty deprecated stub (cannot be deleted); ignore it.
 - `UsersMongoConfig` exposes `"usersMongoClient"` and `"tokenValidationMongoTemplate"` beans (connecting to `dijkstra-users`) so the common `JwtFilter` can validate tokens.
-- Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary).
+- Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary); `rabbitmq.exchange`, `rabbitmq.queue.route-recalculation`.
+
+**Saved routes:**
+- `RouteDocument` stores `nodeA`, `nodeB`, `List<String> path` (ordered node names A→B inclusive), `List<Integer> segmentDistances` (per-hop), `distance`, `stale` boolean.
+- Routes are bidirectional — stored once as A→B. `getRoute(B,A)` reverses both `path` and `segmentDistances` lists on the fly.
+- `stale=true` means recalculation is pending. Set synchronously in the mutation thread before publishing the RabbitMQ event; async consumer calls `recalculateAllStale()`. If a user requests a stale route before background recalculation completes, it is recalculated on-the-fly.
+- Invalidation rules: `addNode`/`updateNode` → mark all routes stale + publish `map.node.added/updated`; `deleteNode` → `deleteByEndpoint(name)` (endpoint routes deleted) + `markStaleByPath(name)` (intermediate routes marked stale) + publish `map.node.deleted`; `createMap` → `deleteAll()` (no event needed).
+- `RouteRepository.findRoute` uses `$or` query to match either direction. `findByPathContaining` uses `{ path: "nodeName" }` — MongoDB naturally checks array membership.
 
 ### user-service
 
@@ -178,6 +187,9 @@ NodeDocument  { id: String (UUID), name: String, position: Position, connections
                 createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
 Position      { x: double, y: double }
 
+RouteDocument { id: String, nodeA: String, nodeB: String, path: List<String>, segmentDistances: List<Integer>,
+                distance: int, stale: boolean, createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
+
 UserDocument  { id: String (UUID), username: String, email: String (sparse unique), password: String (BCrypt), role: UserRole,
                 createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
 TokenDocument { id: String, token: String (unique UUID), userId: String, valid: boolean, expiresAt: Date (TTL),
@@ -200,6 +212,10 @@ All endpoints require `Authorization: Bearer <token>`.
 | `PUT` | `/map/node/{name}` | Update a node's connections and/or position |
 | `DELETE` | `/map/node/{name}` | Delete a node; removes it from all neighbours |
 | `GET` | `/map/path?from=X&to=Y` | Run Dijkstra; returns total distance and ordered path segments |
+| `POST` | `/map/route?from=X&to=Y` | Save (or overwrite) a route; returns 201 with `SavedRouteResponse` |
+| `GET` | `/map/route?from=X&to=Y` | Return saved route (recalculates on-the-fly if stale); 409 if not found |
+| `DELETE` | `/map/route?from=X&to=Y` | Delete saved route; 409 if not found |
+| `GET` | `/map/routes` | List all saved routes |
 
 ### user-service
 
@@ -232,9 +248,12 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 
 | Class | What it tests |
 |---|---|
-| `NodeServiceTest` | All CRUD paths, validation, bidirectional wiring, position propagation — mocks `NodeRepository` + `CacheData` |
+| `NodeServiceTest` | All CRUD paths, validation, bidirectional wiring, position propagation; verifies route invalidation calls + RabbitMQ publish on each mutation — mocks `NodeRepository` + `CacheData` + `RouteService` + `RabbitTemplate` |
 | `PathServiceTest` | Dijkstra correctness, node-not-found and no-path errors — mocks `CacheData` |
 | `MapControllerTest` | HTTP status codes, JSON shape, `@Valid` rejections, `MapException` → 409 |
+| `RouteControllerTest` | All `/map/route` and `/map/routes` endpoints — success and 409 cases |
+| `RouteServiceTest` | saveRoute, getRoute (forward/reversed/stale/not-found), deleteRoute, getAllRoutes, markAllStale, markStaleByPath, deleteByEndpoint, deleteAll, recalculateAllStale (including delete-on-no-path) |
+| `RouteRecalculationConsumerTest` | Any event type (NODE_ADDED/UPDATED/DELETED_INTERMEDIATE) calls `recalculateAllStale()` |
 | `CacheDataTest` | `refresh()` replaces (not appends), list is unmodifiable, concurrent stress test |
 | `NodeDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
 
@@ -259,5 +278,5 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `lombok` | root | `@Getter`/`@Setter`/`@Slf4j`/`@RequiredArgsConstructor`/`@AllArgsConstructor` |
 | `spring-boot-starter-test` | root (test) | JUnit 5, Mockito, MockMvc |
 | `spring-boot-starter-security` | common | Spring Security filter chain |
-| `spring-boot-starter-amqp` | user-service, notification-service | RabbitMQ messaging |
+| `spring-boot-starter-amqp` | map-service, user-service, notification-service | RabbitMQ messaging |
 | `spring-boot-starter-mail` | notification-service | JavaMailSender / SMTP |

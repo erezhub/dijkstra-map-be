@@ -4,6 +4,7 @@ import com.eRez.map.data.CacheData;
 import com.eRez.map.database.document.NodeDocument;
 import com.eRez.map.database.repository.NodeRepository;
 import com.eRez.map.dto.Position;
+import com.eRez.map.dto.event.NodeChangedEvent;
 import com.eRez.map.dto.request.CreateMapRequest;
 import com.eRez.map.dto.request.NodeRequest;
 import com.eRez.map.dto.request.UpdateNodeRequest;
@@ -17,6 +18,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -29,6 +32,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -38,6 +42,8 @@ class NodeServiceTest {
 
     @Mock private NodeRepository nodeRepository;
     @Mock private CacheData cacheData;
+    @Mock private RouteService routeService;
+    @Mock private RabbitTemplate rabbitTemplate;
     @InjectMocks private NodeService nodeService;
 
     private static final String ID_A = "id-amsterdam";
@@ -54,6 +60,7 @@ class NodeServiceTest {
         amsterdam.setPosition(position(1.0, 2.0));
         berlin    = doc(ID_B, "Berlin",    new HashMap<>(Map.of(ID_A, 7)));
         paris     = doc(ID_C, "Paris",     new HashMap<>());
+        ReflectionTestUtils.setField(nodeService, "exchange", "dijkstra.events");
     }
 
     private NodeDocument doc(String id, String name, Map<String, Integer> connections) {
@@ -90,6 +97,7 @@ class NodeServiceTest {
 
         nodeService.createMap(request);
 
+        verify(routeService).deleteAll();
         verify(nodeRepository).deleteAll();
         verify(nodeRepository).saveAll(anyList());
         verify(cacheData).refresh();
@@ -150,6 +158,8 @@ class NodeServiceTest {
         verify(nodeRepository).saveAll(anyCollection());
         verify(cacheData).refresh();
         assertThat(berlin.getConnections()).hasSize(2); // original + Prague
+        verify(routeService).markAllStale();
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("map.node.added"), any(NodeChangedEvent.class));
     }
 
     @Test
@@ -196,6 +206,8 @@ class NodeServiceTest {
 
         verify(nodeRepository).saveAll(anyCollection());
         assertThat(paris.getConnections()).containsKey(ID_A);
+        verify(routeService).markAllStale();
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("map.node.updated"), any(NodeChangedEvent.class));
     }
 
     @Test
@@ -247,6 +259,9 @@ class NodeServiceTest {
         verify(nodeRepository).saveAll(anyList());
         verify(nodeRepository).delete(amsterdam);
         assertThat(berlin.getConnections()).doesNotContainKey(ID_A);
+        verify(routeService).deleteByEndpoint("Amsterdam");
+        verify(routeService).markStaleByPath("Amsterdam");
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("map.node.deleted"), any(NodeChangedEvent.class));
     }
 
     @Test

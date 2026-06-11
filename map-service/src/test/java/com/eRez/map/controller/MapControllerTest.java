@@ -5,10 +5,12 @@ import com.eRez.map.dto.response.MapResponse;
 import com.eRez.map.dto.response.NodeResponse;
 import com.eRez.map.dto.response.PathResponse;
 import com.eRez.map.dto.response.PathSegment;
+import com.eRez.map.dto.response.SavedRouteResponse;
 import com.eRez.common.exception.GlobalExceptionHandler;
 import com.eRez.map.exception.MapException;
 import com.eRez.map.services.NodeService;
 import com.eRez.map.services.PathService;
+import com.eRez.map.services.RouteService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -19,10 +21,13 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -37,12 +42,13 @@ class MapControllerTest {
 
     @Mock private NodeService nodeService;
     @Mock private PathService pathService;
+    @Mock private RouteService routeService;
 
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        MapController controller = new MapController(nodeService, pathService);
+        MapController controller = new MapController(nodeService, pathService, routeService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -190,7 +196,8 @@ class MapControllerTest {
     // ── GET /map/path ─────────────────────────────────────────────────────────
 
     @Test
-    void getPath_returns200WithPathResponse() throws Exception {
+    void getPath_noSavedRoute_runsDijkstra() throws Exception {
+        when(routeService.findCachedRoute("Amsterdam", "Prague")).thenReturn(Optional.empty());
         when(pathService.getPath("Amsterdam", "Prague")).thenReturn(new PathResponse(12, List.of(
                 new PathSegment("Amsterdam", "Berlin", 7),
                 new PathSegment("Berlin",    "Prague", 5)
@@ -202,10 +209,29 @@ class MapControllerTest {
                 .andExpect(jsonPath("$.path.length()").value(2))
                 .andExpect(jsonPath("$.path[0].from").value("Amsterdam"))
                 .andExpect(jsonPath("$.path[1].to").value("Prague"));
+
+        verify(pathService).getPath("Amsterdam", "Prague");
+    }
+
+    @Test
+    void getPath_cachedRouteExists_returnsCachedWithoutDijkstra() throws Exception {
+        SavedRouteResponse cached = new SavedRouteResponse("Amsterdam", "Prague", 12, List.of(
+                new PathSegment("Amsterdam", "Berlin", 7),
+                new PathSegment("Berlin",    "Prague", 5)
+        ));
+        when(routeService.findCachedRoute("Amsterdam", "Prague")).thenReturn(Optional.of(cached));
+
+        mockMvc.perform(get("/map/path").param("from", "Amsterdam").param("to", "Prague"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.distance").value(12))
+                .andExpect(jsonPath("$.path.length()").value(2));
+
+        verify(pathService, org.mockito.Mockito.never()).getPath(anyString(), anyString());
     }
 
     @Test
     void getPath_serviceThrowsMapException_returns409() throws Exception {
+        when(routeService.findCachedRoute("Atlantis", "Amsterdam")).thenReturn(Optional.empty());
         doThrow(new MapException("Node not found: Atlantis"))
                 .when(pathService).getPath("Atlantis", "Amsterdam");
 

@@ -56,8 +56,13 @@ services:
       MONGODB_MAP_URI: mongodb://admin:password@mongodb:27017/dijkstra-map?authSource=admin
       MONGODB_MAP_DATABASE: dijkstra-map
       MONGODB_USERS_URI: mongodb://admin:password@mongodb:27017/dijkstra-users?authSource=admin
+      SPRING_RABBITMQ_HOST: rabbitmq
+      RABBITMQ_EXCHANGE: dijkstra.events
+      RABBITMQ_QUEUE_ROUTE__RECALCULATION: map-service.route-recalculation
     depends_on:
       mongodb:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
   user-service:

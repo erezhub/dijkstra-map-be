@@ -7,6 +7,7 @@ import com.eRez.map.dto.response.MapResponse;
 import com.eRez.map.dto.response.PathResponse;
 import com.eRez.map.services.NodeService;
 import com.eRez.map.services.PathService;
+import com.eRez.map.services.RouteService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -28,6 +29,7 @@ public class MapController {
 
     private final NodeService nodeService;
     private final PathService pathService;
+    private final RouteService routeService;
 
     @GetMapping
     @ResponseStatus(HttpStatus.OK)
@@ -62,6 +64,8 @@ public class MapController {
     @GetMapping("/path")
     @ResponseStatus(HttpStatus.OK)
     public PathResponse getPath(@RequestParam String from, @RequestParam String to) {
-        return pathService.getPath(from, to);
+        return routeService.findCachedRoute(from, to)
+                .map(r -> new PathResponse(r.getDistance(), r.getPath()))
+                .orElseGet(() -> pathService.getPath(from, to));
     }
 }
