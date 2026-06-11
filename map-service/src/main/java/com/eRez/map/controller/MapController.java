@@ -5,12 +5,15 @@ import com.eRez.map.dto.request.NodeRequest;
 import com.eRez.map.dto.request.UpdateNodeRequest;
 import com.eRez.map.dto.response.MapResponse;
 import com.eRez.map.dto.response.PathResponse;
+import com.eRez.map.exception.MapException;
 import com.eRez.map.services.NodeService;
 import com.eRez.map.services.PathService;
 import com.eRez.map.services.RouteService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -39,25 +42,33 @@ public class MapController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public void createMap(@RequestBody @Valid CreateMapRequest request) {
+    public void createMap(@AuthenticationPrincipal UserDetails caller,
+                          @RequestBody @Valid CreateMapRequest request) {
+        denyRegular(caller);
         nodeService.createMap(request);
     }
 
     @PostMapping("/node")
     @ResponseStatus(HttpStatus.CREATED)
-    public void addNode(@RequestBody @Valid NodeRequest request) {
+    public void addNode(@AuthenticationPrincipal UserDetails caller,
+                        @RequestBody @Valid NodeRequest request) {
+        denyRegular(caller);
         nodeService.addNode(request);
     }
 
     @PutMapping("/node/{name}")
     @ResponseStatus(HttpStatus.OK)
-    public void updateNode(@PathVariable String name, @RequestBody UpdateNodeRequest request) {
+    public void updateNode(@AuthenticationPrincipal UserDetails caller,
+                           @PathVariable String name, @RequestBody UpdateNodeRequest request) {
+        denyRegular(caller);
         nodeService.updateNode(name, request);
     }
 
     @DeleteMapping("/node/{name}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    public void deleteNode(@PathVariable String name) {
+    public void deleteNode(@AuthenticationPrincipal UserDetails caller,
+                           @PathVariable String name) {
+        denyRegular(caller);
         nodeService.deleteNode(name);
     }
 
@@ -67,5 +78,11 @@ public class MapController {
         return routeService.findCachedRoute(from, to)
                 .map(r -> new PathResponse(r.getDistance(), r.getPath()))
                 .orElseGet(() -> pathService.getPath(from, to));
+    }
+
+    private void denyRegular(UserDetails caller) {
+        boolean isRegular = caller.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_REGULAR"));
+        if (isRegular) throw new MapException("Access denied");
     }
 }

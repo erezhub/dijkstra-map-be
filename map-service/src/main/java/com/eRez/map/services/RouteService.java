@@ -8,6 +8,7 @@ import com.eRez.map.dto.response.SavedRouteResponse;
 import com.eRez.map.exception.MapException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -29,35 +30,51 @@ public class RouteService {
                 .map(r -> toResponse(r, !r.getNodeA().equals(from)));
     }
 
-    public SavedRouteResponse saveRoute(String from, String to) {
+    public SavedRouteResponse saveRoute(String from, String to, UserDetails caller) {
         PathResponse pathResponse = pathService.getPath(from, to);
         RouteDocument route = routeRepository.findRoute(from, to).orElse(new RouteDocument());
         route.setNodeA(from);
         route.setNodeB(to);
+        if (route.getCreatedBy() == null) {
+            route.setCreatedBy(new ArrayList<>());
+        }
+        if (!route.getCreatedBy().contains(caller.getUsername())) {
+            route.getCreatedBy().add(caller.getUsername());
+        }
         populateFromPathResponse(route, pathResponse);
         routeRepository.save(route);
-        log.info("Route saved: {} → {} (distance: {})", from, to, pathResponse.getDistance());
+        log.info("Route saved: {} → {} (distance: {}) by {}", from, to, pathResponse.getDistance(), caller.getUsername());
         return toResponse(route, false);
     }
 
-    public SavedRouteResponse getRoute(String from, String to) {
-        RouteDocument route = routeRepository.findRoute(from, to)
-                .orElseThrow(() -> new MapException("No saved route from '" + from + "' to '" + to + "'"));
+    public SavedRouteResponse getRoute(String from, String to, UserDetails caller) {
+        RouteDocument route = findRouteForCaller(from, to, caller);
         if (route.isStale()) {
             route = recalculateRoute(route);
         }
         return toResponse(route, !route.getNodeA().equals(from));
     }
 
-    public void deleteRoute(String from, String to) {
-        RouteDocument route = routeRepository.findRoute(from, to)
-                .orElseThrow(() -> new MapException("No saved route from '" + from + "' to '" + to + "'"));
-        routeRepository.delete(route);
-        log.info("Route deleted: {} ↔ {}", from, to);
+    public void deleteRoute(String from, String to, UserDetails caller) {
+        RouteDocument route = findRouteForCaller(from, to, caller);
+        if (isRegular(caller)) {
+            route.getCreatedBy().remove(caller.getUsername());
+            if (route.getCreatedBy().isEmpty()) {
+                routeRepository.delete(route);
+            } else {
+                routeRepository.save(route);
+            }
+        } else {
+            routeRepository.delete(route);
+        }
+        log.info("Route deleted: {} ↔ {} by {}", from, to, caller.getUsername());
     }
 
-    public List<SavedRouteResponse> getAllRoutes() {
-        return routeRepository.findAll().stream()
+    public List<SavedRouteResponse> getAllRoutes(UserDetails caller) {
+        List<RouteDocument> routes = isRegular(caller)
+                ? routeRepository.findByCreatedByContaining(caller.getUsername())
+                : routeRepository.findAll();
+        return routes.stream()
                 .map(r -> toResponse(r, false))
                 .toList();
     }
@@ -102,6 +119,21 @@ public class RouteService {
         }
     }
 
+    private RouteDocument findRouteForCaller(String from, String to, UserDetails caller) {
+        String notFoundMsg = "No saved route from '" + from + "' to '" + to + "'";
+        if (isRegular(caller)) {
+            return routeRepository.findRouteByCreator(from, to, caller.getUsername())
+                    .orElseThrow(() -> new MapException(notFoundMsg));
+        }
+        return routeRepository.findRoute(from, to)
+                .orElseThrow(() -> new MapException(notFoundMsg));
+    }
+
+    private boolean isRegular(UserDetails caller) {
+        return caller.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_REGULAR"));
+    }
+
     private RouteDocument recalculateRoute(RouteDocument route) {
         PathResponse pathResponse = pathService.getPath(route.getNodeA(), route.getNodeB());
         populateFromPathResponse(route, pathResponse);
@@ -141,6 +173,6 @@ public class RouteService {
         }
         String nodeA = reversed ? route.getNodeB() : route.getNodeA();
         String nodeB = reversed ? route.getNodeA() : route.getNodeB();
-        return new SavedRouteResponse(nodeA, nodeB, route.getDistance(), segments);
+        return new SavedRouteResponse(nodeA, nodeB, route.getDistance(), segments, route.getCreatedBy());
     }
 }

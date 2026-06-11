@@ -5,16 +5,25 @@ import com.eRez.map.dto.response.PathSegment;
 import com.eRez.map.dto.response.SavedRouteResponse;
 import com.eRez.map.exception.MapException;
 import com.eRez.map.services.RouteService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.web.method.annotation.AuthenticationPrincipalArgumentResolver;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -35,21 +44,35 @@ class RouteControllerTest {
     void setUp() {
         mockMvc = MockMvcBuilders.standaloneSetup(new RouteController(routeService))
                 .setControllerAdvice(new GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver())
                 .build();
+        setAuth("admin", "ADMIN");
+    }
+
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
+
+    private void setAuth(String username, String role) {
+        var authorities = List.of(new SimpleGrantedAuthority("ROLE_" + role));
+        var userDetails = User.withUsername(username).password("").authorities(authorities).build();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(userDetails, null, authorities));
     }
 
     private SavedRouteResponse sampleResponse() {
         return new SavedRouteResponse("A", "C", 10, List.of(
                 new PathSegment("A", "B", 4),
                 new PathSegment("B", "C", 6)
-        ));
+        ), List.of("admin"));
     }
 
     // ── POST /map/route ───────────────────────────────────────────────────────
 
     @Test
     void saveRoute_returns201WithBody() throws Exception {
-        when(routeService.saveRoute("A", "C")).thenReturn(sampleResponse());
+        when(routeService.saveRoute(eq("A"), eq("C"), any())).thenReturn(sampleResponse());
 
         mockMvc.perform(post("/map/route").param("from", "A").param("to", "C"))
                 .andExpect(status().isCreated())
@@ -63,7 +86,8 @@ class RouteControllerTest {
 
     @Test
     void saveRoute_serviceThrows_returns409() throws Exception {
-        when(routeService.saveRoute("A", "GONE")).thenThrow(new MapException("Node not found: GONE"));
+        when(routeService.saveRoute(eq("A"), eq("GONE"), any()))
+                .thenThrow(new MapException("Node not found: GONE"));
 
         mockMvc.perform(post("/map/route").param("from", "A").param("to", "GONE"))
                 .andExpect(status().isConflict())
@@ -74,7 +98,7 @@ class RouteControllerTest {
 
     @Test
     void getRoute_returns200WithBody() throws Exception {
-        when(routeService.getRoute("A", "C")).thenReturn(sampleResponse());
+        when(routeService.getRoute(eq("A"), eq("C"), any())).thenReturn(sampleResponse());
 
         mockMvc.perform(get("/map/route").param("from", "A").param("to", "C"))
                 .andExpect(status().isOk())
@@ -85,11 +109,22 @@ class RouteControllerTest {
 
     @Test
     void getRoute_notFound_returns409() throws Exception {
-        when(routeService.getRoute("A", "C")).thenThrow(new MapException("No saved route from 'A' to 'C'"));
+        when(routeService.getRoute(eq("A"), eq("C"), any()))
+                .thenThrow(new MapException("No saved route from 'A' to 'C'"));
 
         mockMvc.perform(get("/map/route").param("from", "A").param("to", "C"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("No saved route from 'A' to 'C'"));
+    }
+
+    @Test
+    void getRoute_regularUser_passesCallerToService() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+        when(routeService.getRoute(eq("A"), eq("C"), argThat(u -> u.getUsername().equals("user@x.com"))))
+                .thenReturn(sampleResponse());
+
+        mockMvc.perform(get("/map/route").param("from", "A").param("to", "C"))
+                .andExpect(status().isOk());
     }
 
     // ── DELETE /map/route ─────────────────────────────────────────────────────
@@ -99,26 +134,37 @@ class RouteControllerTest {
         mockMvc.perform(delete("/map/route").param("from", "A").param("to", "C"))
                 .andExpect(status().isNoContent());
 
-        verify(routeService).deleteRoute("A", "C");
+        verify(routeService).deleteRoute(eq("A"), eq("C"), any());
     }
 
     @Test
     void deleteRoute_notFound_returns409() throws Exception {
         doThrow(new MapException("No saved route from 'A' to 'C'"))
-                .when(routeService).deleteRoute("A", "C");
+                .when(routeService).deleteRoute(eq("A"), eq("C"), any());
 
         mockMvc.perform(delete("/map/route").param("from", "A").param("to", "C"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("No saved route from 'A' to 'C'"));
     }
 
+    @Test
+    void deleteRoute_regularUser_passesCallerToService() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+
+        mockMvc.perform(delete("/map/route").param("from", "A").param("to", "C"))
+                .andExpect(status().isNoContent());
+
+        verify(routeService).deleteRoute(eq("A"), eq("C"),
+                argThat(u -> u.getUsername().equals("user@x.com")));
+    }
+
     // ── GET /map/routes ───────────────────────────────────────────────────────
 
     @Test
     void getAllRoutes_returns200WithList() throws Exception {
-        when(routeService.getAllRoutes()).thenReturn(List.of(
+        when(routeService.getAllRoutes(any())).thenReturn(List.of(
                 sampleResponse(),
-                new SavedRouteResponse("X", "Y", 3, List.of(new PathSegment("X", "Y", 3)))
+                new SavedRouteResponse("X", "Y", 3, List.of(new PathSegment("X", "Y", 3)), List.of("admin"))
         ));
 
         mockMvc.perform(get("/map/routes"))
@@ -130,10 +176,20 @@ class RouteControllerTest {
 
     @Test
     void getAllRoutes_empty_returns200WithEmptyList() throws Exception {
-        when(routeService.getAllRoutes()).thenReturn(List.of());
+        when(routeService.getAllRoutes(any())).thenReturn(List.of());
 
         mockMvc.perform(get("/map/routes"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void getAllRoutes_regularUser_passesCallerToService() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+        when(routeService.getAllRoutes(argThat(u -> u.getUsername().equals("user@x.com"))))
+                .thenReturn(List.of());
+
+        mockMvc.perform(get("/map/routes"))
+                .andExpect(status().isOk());
     }
 }

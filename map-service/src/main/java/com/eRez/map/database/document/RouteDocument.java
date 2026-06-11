@@ -24,6 +24,7 @@ public class RouteDocument implements Auditable {
     private List<Integer> segmentDistances; // per-hop distances matching path gaps
     private int distance;
     private boolean stale;
+    private List<String> createdBy;
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

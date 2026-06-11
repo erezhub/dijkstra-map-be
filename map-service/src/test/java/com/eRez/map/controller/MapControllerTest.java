@@ -11,11 +11,17 @@ import com.eRez.map.exception.MapException;
 import com.eRez.map.services.NodeService;
 import com.eRez.map.services.PathService;
 import com.eRez.map.services.RouteService;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.User;
+import org.springframework.security.web.method.annotation.AuthenticationPrincipalArgumentResolver;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -51,7 +57,21 @@ class MapControllerTest {
         MapController controller = new MapController(nodeService, pathService, routeService);
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
+                .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver())
                 .build();
+        setAuth("admin", "ADMIN");
+    }
+
+    @AfterEach
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+    }
+
+    private void setAuth(String username, String role) {
+        var authorities = List.of(new SimpleGrantedAuthority("ROLE_" + role));
+        var userDetails = User.withUsername(username).password("").authorities(authorities).build();
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(userDetails, null, authorities));
     }
 
     private Position position(double x, double y) {
@@ -88,6 +108,34 @@ class MapControllerTest {
                   "nodes": [
                     {"name": "Amsterdam", "position": {"x": 1.0, "y": 2.0}, "connections": {"Berlin": 7}},
                     {"name": "Berlin",    "position": {"x": 3.0, "y": 4.0}, "connections": {"Amsterdam": 7}}
+                  ]
+                }
+                """;
+
+        mockMvc.perform(post("/map").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
+    void createMap_regularUser_returns409() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+        String body = """
+                {"nodes": [{"name": "Amsterdam", "connections": {}}]}
+                """;
+
+        mockMvc.perform(post("/map").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Access denied"));
+    }
+
+    @Test
+    void createMap_managerUser_returns201() throws Exception {
+        setAuth("mgr@x.com", "MANAGER");
+        String body = """
+                {
+                  "nodes": [
+                    {"name": "Amsterdam", "connections": {}},
+                    {"name": "Berlin",    "connections": {}}
                   ]
                 }
                 """;
@@ -139,6 +187,18 @@ class MapControllerTest {
     }
 
     @Test
+    void addNode_regularUser_returns409() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+        String body = """
+                {"name": "Prague", "connections": {}}
+                """;
+
+        mockMvc.perform(post("/map/node").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Access denied"));
+    }
+
+    @Test
     void addNode_nullName_returns409() throws Exception {
         String body = """
                 {"name": null, "connections": {}}
@@ -162,6 +222,18 @@ class MapControllerTest {
     }
 
     @Test
+    void updateNode_regularUser_returns409() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+        String body = """
+                {"connections": {}}
+                """;
+
+        mockMvc.perform(put("/map/node/Amsterdam").contentType(APPLICATION_JSON).content(body))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Access denied"));
+    }
+
+    @Test
     void updateNode_serviceThrowsMapException_returns409() throws Exception {
         doThrow(new MapException("Node not found: Unknown"))
                 .when(nodeService).updateNode(eq("Unknown"), any());
@@ -181,6 +253,15 @@ class MapControllerTest {
     void deleteNode_returns204() throws Exception {
         mockMvc.perform(delete("/map/node/Amsterdam"))
                 .andExpect(status().isNoContent());
+    }
+
+    @Test
+    void deleteNode_regularUser_returns409() throws Exception {
+        setAuth("user@x.com", "REGULAR");
+
+        mockMvc.perform(delete("/map/node/Amsterdam"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("Access denied"));
     }
 
     @Test
@@ -218,7 +299,7 @@ class MapControllerTest {
         SavedRouteResponse cached = new SavedRouteResponse("Amsterdam", "Prague", 12, List.of(
                 new PathSegment("Amsterdam", "Berlin", 7),
                 new PathSegment("Berlin",    "Prague", 5)
-        ));
+        ), List.of("admin"));
         when(routeService.findCachedRoute("Amsterdam", "Prague")).thenReturn(Optional.of(cached));
 
         mockMvc.perform(get("/map/path").param("from", "Amsterdam").param("to", "Prague"))
