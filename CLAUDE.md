@@ -8,7 +8,7 @@ Three Spring Boot services sharing a `common` module:
 
 - **map-service** (port 8080) — stores a weighted graph of named nodes in MongoDB and exposes Dijkstra's shortest path algorithm over HTTP. Requires Bearer token authentication on all endpoints.
 - **user-service** (port 8081) — user management with role-based access (ADMIN → MANAGER → REGULAR) and opaque-token authentication. Publishes a `user.created` RabbitMQ event after every user creation.
-- **notification-service** (no HTTP port) — RabbitMQ consumer; listens for `user.created` events and sends a welcome email via SMTP. Uses MailHog in dev.
+- **notification-service** (no HTTP port) — RabbitMQ consumer; listens for `user.created` and `route.recalculated` events and sends emails via SMTP. Uses MailHog in dev.
 
 ## Build & Run
 
@@ -109,13 +109,13 @@ Shared infrastructure used by both services.
 | Package | Purpose |
 |---|---|
 | `controller` | `MapController` — node/path endpoints; `RouteController` — saved-route endpoints |
-| `services` | `NodeService` — CRUD + bidirectional connection logic; `PathService` — Dijkstra algorithm; `RouteService` — saved route CRUD + stale/recalculation logic |
+| `services` | `NodeService` — CRUD + bidirectional connection logic; `PathService` — Dijkstra algorithm; `RouteService` — saved route CRUD + stale/recalculation + notification publish logic; `UserLookupService` — resolves notification recipients (route owners + MANAGERs) from `dijkstra-users` |
 | `consumer` | `RouteRecalculationConsumer` — `@RabbitListener`; calls `routeService.recalculateAllStale()` on any `map.node.*` event |
 | `data` | `CacheData` — thread-safe in-memory cache, owns its own lifecycle |
 | `database/document` | `NodeDocument` (`nodes` collection); `RouteDocument` (`routes` collection) |
 | `database/repository` | `NodeRepository`; `RouteRepository` — includes `findRoute` (bidirectional), `findRouteByCreator` (bidirectional + owner filter), `findByPathContaining`, `findByStaleTrue`, `findByCreatedByContaining`, `deleteByNodeAOrNodeB` |
 | `dto` | `MapNode` — in-memory algorithm node; `Position` — `{ x, y }` coordinate pair |
-| `dto/event` | `NodeChangedEvent` — RabbitMQ event payload `{ type, nodeName }` |
+| `dto/event` | `NodeChangedEvent` — RabbitMQ event payload `{ type, nodeName }`; `RouteRecalculatedEvent` — `{ nodeA, nodeB, distance, recipients }` |
 | `dto/request` | `CreateMapRequest`, `NodeRequest`, `UpdateNodeRequest` |
 | `dto/response` | `MapResponse`, `NodeResponse`, `PathResponse`, `PathSegment`, `SavedRouteResponse` |
 | `exception` | `MapException extends ServiceException` |
@@ -127,7 +127,6 @@ Shared infrastructure used by both services.
 - `CacheData` owns its own lifecycle (`@PostConstruct`). The `nodes` field is a `volatile` unmodifiable snapshot; reads need no locking. `NodeService` calls `cacheData.refresh()` after every write. Read endpoints never hit MongoDB.
 - `MapService.java` is an empty deprecated stub (cannot be deleted); ignore it.
 - `UsersMongoConfig` exposes `"usersMongoClient"` and `"tokenValidationMongoTemplate"` beans (connecting to `dijkstra-users`) so the common `JwtFilter` can validate tokens.
-- Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary); `rabbitmq.exchange`, `rabbitmq.queue.route-recalculation`.
 - **RBAC**: REGULAR users are denied `POST /map`, `POST /map/node`, `PUT /map/node/{name}`, `DELETE /map/node/{name}` (409 `"Access denied"`). `GET /map` and `GET /map/path` are open to all roles. Role check is explicit code in the controller (`denyRegular(caller)`) — not `@PreAuthorize`, so it works in `standaloneSetup` tests.
 
 **Saved routes:**
@@ -137,6 +136,8 @@ Shared infrastructure used by both services.
 - Invalidation rules: `addNode`/`updateNode` → mark all routes stale + publish `map.node.added/updated`; `deleteNode` → `deleteByEndpoint(name)` (endpoint routes deleted) + `markStaleByPath(name)` (intermediate routes marked stale) + publish `map.node.deleted`; `createMap` → `deleteAll()` (no event needed).
 - `RouteRepository.findRoute` uses `$or` query to match either direction. `findByPathContaining` uses `{ path: "nodeName" }` — MongoDB naturally checks array membership.
 - **Route ownership (RBAC)**: REGULAR users can only GET/DELETE routes they created. Multiple users can co-own one route document via `createdBy` list — saving adds the caller's username if not present. REGULAR deleting removes their username; document is physically deleted only when the list is empty. ADMIN/MANAGER can access all routes and always delete the full document. `recalculateAllStale()` (consumer) needs no caller context.
+- **Route recalculation notifications**: after `recalculateRoute()` saves updated data, if the distance or path changed, a `RouteRecalculatedEvent` is published to `dijkstra.events` with routing key `route.recalculated`. Recipients are resolved by `UserLookupService`: route co-owners (from `createdBy`, filtering out `"admin"`) plus all MANAGER emails queried from `dijkstra-users.users`. No event is published if nothing changed or if the recipient list is empty. Both the async consumer path (`recalculateAllStale`) and the on-the-fly path (`getRoute` on a stale route) go through `recalculateRoute()`, so both trigger notifications.
+- Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary); `rabbitmq.exchange`, `rabbitmq.queue.route-recalculation`, `rabbitmq.routing-key.route-recalculated`.
 
 ### user-service
 
@@ -167,20 +168,21 @@ Shared infrastructure used by both services.
 
 | Package | Purpose |
 |---|---|
-| `config` | `RabbitConfig` — declares `TopicExchange`, `Queue` (`notification.user.created`), `Binding`; registers `JacksonJsonMessageConverter` and `SimpleRabbitListenerContainerFactory` |
-| `consumer` | `UserCreatedConsumer` — `@RabbitListener` on `${rabbitmq.queue.user-created}`; calls `EmailService` |
-| `service` | `EmailService` — builds a `MimeMessage` via `MimeMessageHelper`; sets from address + display name; sends via `JavaMailSender` |
-| `dto` | `UserCreatedEvent` — `{ id, username, email, role }` plain POJO; matches what user-service publishes |
+| `config` | `RabbitConfig` — declares `TopicExchange`; queues + bindings for `notification.user.created` and `notification.route.recalculated`; registers `JacksonJsonMessageConverter` and `SimpleRabbitListenerContainerFactory` |
+| `consumer` | `UserCreatedConsumer` — `@RabbitListener` on `${rabbitmq.queue.user-created}`; calls `EmailService.sendWelcomeEmail()`; `RouteRecalculatedConsumer` — `@RabbitListener` on `${rabbitmq.queue.route-recalculated}`; calls `EmailService.sendRouteUpdateEmail()` |
+| `service` | `EmailService` — private `sendEmail(to, subject, body)` helper; `sendWelcomeEmail()` and `sendRouteUpdateEmail()` build their strings and delegate to it |
+| `dto` | `UserCreatedEvent` — `{ id, username, email, role }`; `RouteRecalculatedEvent` — `{ nodeA, nodeB, distance, recipients }` — plain POJOs matching what the publishing services send |
 
 **Key decisions:**
 - No dependency on `common` — avoids pulling in MongoDB, Spring Security, and token validation.
 - `spring.main.web-application-type=none` — no embedded Tomcat; AMQP listener threads keep the JVM alive.
-- Exchange is declared in both user-service and notification-service (idempotent in RabbitMQ). Queue and binding are declared only in notification-service (consumer owns its queue).
+- Exchange is declared in both publishing services and notification-service (idempotent in RabbitMQ). Queues and bindings are declared only in notification-service (consumer owns its queues).
 - `JacksonJsonMessageConverter` (Spring AMQP 4.x) replaces the deprecated `Jackson2JsonMessageConverter`.
 - From address (`notification.mail.from`) and display name (`notification.mail.from-name`) are separate properties; `EmailService` combines them into `InternetAddress(from, fromName)`.
 - MailHog (`localhost:1025`) is the default SMTP target for local and Docker dev. In Docker, `SPRING_MAIL_HOST: mailhog` overrides the host to the container name.
 - `.env.example` documents the `MAIL_USERNAME` / `MAIL_PASSWORD` env vars needed for real SMTP; `.env` is gitignored.
-- Property keys: `rabbitmq.exchange`, `rabbitmq.queue.user-created`, `rabbitmq.routing-key.user-created`; `notification.mail.from`, `notification.mail.from-name`.
+- `sendRouteUpdateEmail` sends one email per recipient (no BCC) to avoid recipient address leakage.
+- Property keys: `rabbitmq.exchange`, `rabbitmq.queue.user-created`, `rabbitmq.routing-key.user-created`, `rabbitmq.queue.route-recalculated`, `rabbitmq.routing-key.route-recalculated`; `notification.mail.from`, `notification.mail.from-name`.
 
 ### Data models
 
@@ -255,7 +257,8 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `PathServiceTest` | Dijkstra correctness, node-not-found and no-path errors — mocks `CacheData` |
 | `MapControllerTest` | HTTP status codes, JSON shape, `@Valid` rejections, `MapException` → 409; REGULAR → 409 `"Access denied"` on mutations, MANAGER → 201 — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` |
 | `RouteControllerTest` | All `/map/route` and `/map/routes` endpoints — success and 409 cases; verifies caller is passed through to service for REGULAR users — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` |
-| `RouteServiceTest` | saveRoute (createdBy set, co-ownership, no-duplicate), getRoute (ADMIN unrestricted / REGULAR ownership query / not-owner throws, forward/reversed/stale), deleteRoute (ADMIN full delete / REGULAR last-owner deletes / REGULAR removes from list / not-owner throws), getAllRoutes (ADMIN findAll / REGULAR filtered), markAllStale, markStaleByPath, deleteByEndpoint, deleteAll, recalculateAllStale (including delete-on-no-path) |
+| `RouteServiceTest` | saveRoute (createdBy set, co-ownership, no-duplicate), getRoute (ADMIN unrestricted / REGULAR ownership query / not-owner throws, forward/reversed/stale), deleteRoute (ADMIN full delete / REGULAR last-owner deletes / REGULAR removes from list / not-owner throws), getAllRoutes (ADMIN findAll / REGULAR filtered), markAllStale, markStaleByPath, deleteByEndpoint, deleteAll, recalculateAllStale (including delete-on-no-path); notification publish when distance/path changed, no publish when unchanged, no publish when no recipients, no publish on delete, on-the-fly publish from getRoute |
+| `UserLookupServiceTest` | resolveRecipients includes owner emails + MANAGER emails, filters `"admin"`, deduplicates, handles null/empty createdBy — mocks `MongoTemplate` |
 | `RouteRecalculationConsumerTest` | Any event type (NODE_ADDED/UPDATED/DELETED_INTERMEDIATE) calls `recalculateAllStale()` |
 | `CacheDataTest` | `refresh()` replaces (not appends), list is unmodifiable, concurrent stress test |
 | `NodeDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
@@ -270,6 +273,14 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `UserControllerTest` | All `/users` endpoints — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
 | `UserDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
 | `TokenDocumentTest` | `onBeforeSave()` sets `createdAt` on first call; preserves it on subsequent calls |
+
+### notification-service (`notification-service/src/test/`)
+
+| Class | What it tests |
+|---|---|
+| `UserCreatedConsumerTest` | `onUserCreated` delegates to `EmailService.sendWelcomeEmail()` |
+| `RouteRecalculatedConsumerTest` | `onRouteRecalculated` delegates to `EmailService.sendRouteUpdateEmail()` |
+| `EmailServiceTest` | `sendWelcomeEmail` sends to correct recipient / sets from with display name / sets subject / body contains username + role; `sendRouteUpdateEmail` sends to each recipient (one email per address) / sets subject with node names / body contains distance |
 
 ## Dependencies
 

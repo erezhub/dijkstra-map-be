@@ -4,7 +4,7 @@ Three Spring Boot services sharing a `common` module:
 
 - **map-service** (port 8080) — stores a weighted graph of named nodes in MongoDB and exposes Dijkstra's shortest-path algorithm over HTTP.
 - **user-service** (port 8081) — user management with role-based access control (ADMIN → MANAGER → REGULAR) and opaque-token authentication.
-- **notification-service** (no HTTP port) — listens for `user.created` events from RabbitMQ and sends a welcome email to every newly created user.
+- **notification-service** (no HTTP port) — listens for `user.created` and `route.recalculated` events from RabbitMQ and sends emails via SMTP.
 
 ---
 
@@ -237,7 +237,19 @@ Updates the caller's own profile. All fields are optional. Available to all role
 
 ## Notifications
 
-When a user is created via `POST /users`, user-service publishes a `user.created` event to RabbitMQ. notification-service consumes it and sends a welcome email to the new user's address.
+notification-service handles two types of email:
+
+### Welcome email
+
+When a user is created via `POST /users`, user-service publishes a `user.created` event. notification-service consumes it and sends a welcome email to the new user's address.
+
+### Route recalculation email
+
+When a saved route is recalculated (triggered either by the background consumer after a node mutation, or on-the-fly when a stale route is requested), map-service checks whether the route actually changed. If the distance or path differs, it publishes a `route.recalculated` event containing the new route data and a pre-resolved list of recipients. notification-service sends one email per recipient.
+
+**Recipients:** every user in the route's `createdBy` list (co-owners) plus all MANAGER-role users. Admin is excluded (no email address in the system). If the route is unchanged after recalculation, no event is published and no emails are sent.
+
+### SMTP configuration
 
 In development (Docker Compose), emails are caught by MailHog and never leave your machine. Open **http://localhost:8025** to inspect them.
 
@@ -377,3 +389,67 @@ Runs Dijkstra's algorithm between two nodes.
 }
 ```
 > `distance` is the total cost of the shortest path. `path` is the ordered list of hops.
+
+---
+
+### POST /map/route?from={name}&to={name}
+
+Saves the shortest path between two nodes. If the route already exists, the caller is added to its `createdBy` list (co-ownership). REGULAR users can only access routes they own.
+
+**Query params** `from` and `to` — node names
+
+**Response 201**
+```json
+{
+  "nodeA": "A",
+  "nodeB": "C",
+  "distance": 15,
+  "path": [
+    { "from": "A", "to": "B", "distance": 10 },
+    { "from": "B", "to": "C", "distance": 5 }
+  ],
+  "createdBy": ["alice@example.com"]
+}
+```
+
+---
+
+### GET /map/route?from={name}&to={name}
+
+Returns a saved route. If the route is marked stale (a node was mutated since it was saved), it is recalculated on-the-fly before being returned. REGULAR users can only retrieve routes they own.
+
+**Query params** `from` and `to` — node names
+
+**Response 200** — same shape as `POST /map/route`
+
+---
+
+### DELETE /map/route?from={name}&to={name}
+
+Deletes a saved route. ADMIN/MANAGER always delete the full document. REGULAR users remove themselves from `createdBy`; the document is deleted only when the list becomes empty.
+
+**Query params** `from` and `to` — node names
+
+**Response 204** No content.
+
+---
+
+### GET /map/routes
+
+Lists saved routes. REGULAR users see only routes they own; ADMIN/MANAGER see all routes.
+
+**Response 200**
+```json
+[
+  {
+    "nodeA": "A",
+    "nodeB": "C",
+    "distance": 15,
+    "path": [
+      { "from": "A", "to": "B", "distance": 10 },
+      { "from": "B", "to": "C", "distance": 5 }
+    ],
+    "createdBy": ["alice@example.com", "bob@example.com"]
+  }
+]
+```
