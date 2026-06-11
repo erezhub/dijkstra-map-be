@@ -4,6 +4,7 @@ COPY pom.xml .
 COPY common/ common/
 COPY user-service/ user-service/
 COPY map-service/pom.xml map-service/
+COPY notification-service/pom.xml notification-service/
 RUN mvn clean package -pl user-service -am -DskipTests
 
 FROM eclipse-temurin:21-jre-jammy

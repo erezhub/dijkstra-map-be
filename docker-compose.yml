@@ -107,22 +107,6 @@ services:
       mailhog:
         condition: service_started
 
-  frontend:
-    image: dijkstra-map-fe:latest
-    build:
-      context: ../dijkstra-map-fe
-      dockerfile: Dockerfile
-      args:
-        VITE_MAP_URL: ${VITE_MAP_URL:-http://localhost:8080}
-        VITE_USER_URL: ${VITE_USER_URL:-http://localhost:8081}
-    container_name: frontend
-    restart: unless-stopped
-    ports:
-      - "3000:80"
-    depends_on:
-      - map-service
-      - user-service
-
   mongo-express:
     image: mongo-express:latest
     container_name: mongo-express
