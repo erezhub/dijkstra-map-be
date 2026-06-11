@@ -113,7 +113,7 @@ Shared infrastructure used by both services.
 | `consumer` | `RouteRecalculationConsumer` — `@RabbitListener`; calls `routeService.recalculateAllStale()` on any `map.node.*` event |
 | `data` | `CacheData` — thread-safe in-memory cache, owns its own lifecycle |
 | `database/document` | `NodeDocument` (`nodes` collection); `RouteDocument` (`routes` collection) |
-| `database/repository` | `NodeRepository`; `RouteRepository` — includes `findRoute` (bidirectional), `findByPathContaining`, `findByStaleTrue`, `deleteByNodeAOrNodeB` |
+| `database/repository` | `NodeRepository`; `RouteRepository` — includes `findRoute` (bidirectional), `findRouteByCreator` (bidirectional + owner filter), `findByPathContaining`, `findByStaleTrue`, `findByCreatedByContaining`, `deleteByNodeAOrNodeB` |
 | `dto` | `MapNode` — in-memory algorithm node; `Position` — `{ x, y }` coordinate pair |
 | `dto/event` | `NodeChangedEvent` — RabbitMQ event payload `{ type, nodeName }` |
 | `dto/request` | `CreateMapRequest`, `NodeRequest`, `UpdateNodeRequest` |
@@ -128,13 +128,15 @@ Shared infrastructure used by both services.
 - `MapService.java` is an empty deprecated stub (cannot be deleted); ignore it.
 - `UsersMongoConfig` exposes `"usersMongoClient"` and `"tokenValidationMongoTemplate"` beans (connecting to `dijkstra-users`) so the common `JwtFilter` can validate tokens.
 - Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary); `rabbitmq.exchange`, `rabbitmq.queue.route-recalculation`.
+- **RBAC**: REGULAR users are denied `POST /map`, `POST /map/node`, `PUT /map/node/{name}`, `DELETE /map/node/{name}` (409 `"Access denied"`). `GET /map` and `GET /map/path` are open to all roles. Role check is explicit code in the controller (`denyRegular(caller)`) — not `@PreAuthorize`, so it works in `standaloneSetup` tests.
 
 **Saved routes:**
-- `RouteDocument` stores `nodeA`, `nodeB`, `List<String> path` (ordered node names A→B inclusive), `List<Integer> segmentDistances` (per-hop), `distance`, `stale` boolean.
+- `RouteDocument` stores `nodeA`, `nodeB`, `List<String> path` (ordered node names A→B inclusive), `List<Integer> segmentDistances` (per-hop), `distance`, `stale` boolean, `createdBy` (list of usernames that saved this route).
 - Routes are bidirectional — stored once as A→B. `getRoute(B,A)` reverses both `path` and `segmentDistances` lists on the fly.
 - `stale=true` means recalculation is pending. Set synchronously in the mutation thread before publishing the RabbitMQ event; async consumer calls `recalculateAllStale()`. If a user requests a stale route before background recalculation completes, it is recalculated on-the-fly.
 - Invalidation rules: `addNode`/`updateNode` → mark all routes stale + publish `map.node.added/updated`; `deleteNode` → `deleteByEndpoint(name)` (endpoint routes deleted) + `markStaleByPath(name)` (intermediate routes marked stale) + publish `map.node.deleted`; `createMap` → `deleteAll()` (no event needed).
 - `RouteRepository.findRoute` uses `$or` query to match either direction. `findByPathContaining` uses `{ path: "nodeName" }` — MongoDB naturally checks array membership.
+- **Route ownership (RBAC)**: REGULAR users can only GET/DELETE routes they created. Multiple users can co-own one route document via `createdBy` list — saving adds the caller's username if not present. REGULAR deleting removes their username; document is physically deleted only when the list is empty. ADMIN/MANAGER can access all routes and always delete the full document. `recalculateAllStale()` (consumer) needs no caller context.
 
 ### user-service
 
@@ -188,7 +190,8 @@ NodeDocument  { id: String (UUID), name: String, position: Position, connections
 Position      { x: double, y: double }
 
 RouteDocument { id: String, nodeA: String, nodeB: String, path: List<String>, segmentDistances: List<Integer>,
-                distance: int, stale: boolean, createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
+                distance: int, stale: boolean, createdBy: List<String>,
+                createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
 
 UserDocument  { id: String (UUID), username: String, email: String (sparse unique), password: String (BCrypt), role: UserRole,
                 createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
@@ -204,18 +207,18 @@ Errors always return `409 Conflict` with `{ "message": "..." }`.
 
 All endpoints require `Authorization: Bearer <token>`.
 
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/map` | Return all nodes with named connections and position |
-| `POST` | `/map` | Replace entire map (validates bidirectional connections + weights) |
-| `POST` | `/map/node` | Add a single node; wires reverse connections on neighbours |
-| `PUT` | `/map/node/{name}` | Update a node's connections and/or position |
-| `DELETE` | `/map/node/{name}` | Delete a node; removes it from all neighbours |
-| `GET` | `/map/path?from=X&to=Y` | Run Dijkstra; returns total distance and ordered path segments |
-| `POST` | `/map/route?from=X&to=Y` | Save (or overwrite) a route; returns 201 with `SavedRouteResponse` |
-| `GET` | `/map/route?from=X&to=Y` | Return saved route (recalculates on-the-fly if stale); 409 if not found |
-| `DELETE` | `/map/route?from=X&to=Y` | Delete saved route; 409 if not found |
-| `GET` | `/map/routes` | List all saved routes |
+| Method | Path | Roles | Description |
+|---|---|---|---|
+| `GET` | `/map` | All | Return all nodes with named connections and position |
+| `POST` | `/map` | ADMIN, MANAGER | Replace entire map (validates bidirectional connections + weights) |
+| `POST` | `/map/node` | ADMIN, MANAGER | Add a single node; wires reverse connections on neighbours |
+| `PUT` | `/map/node/{name}` | ADMIN, MANAGER | Update a node's connections and/or position |
+| `DELETE` | `/map/node/{name}` | ADMIN, MANAGER | Delete a node; removes it from all neighbours |
+| `GET` | `/map/path?from=X&to=Y` | All | Run Dijkstra; returns total distance and ordered path segments |
+| `POST` | `/map/route?from=X&to=Y` | All | Save route; adds caller to `createdBy` list; returns 201 with `SavedRouteResponse` |
+| `GET` | `/map/route?from=X&to=Y` | All | Return saved route (recalculates on-the-fly if stale); REGULAR: own routes only; 409 if not found |
+| `DELETE` | `/map/route?from=X&to=Y` | All | Delete saved route; REGULAR: own routes only, removes from `createdBy`; 409 if not found |
+| `GET` | `/map/routes` | All | List saved routes; REGULAR: own routes only |
 
 ### user-service
 
@@ -250,9 +253,9 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 |---|---|
 | `NodeServiceTest` | All CRUD paths, validation, bidirectional wiring, position propagation; verifies route invalidation calls + RabbitMQ publish on each mutation — mocks `NodeRepository` + `CacheData` + `RouteService` + `RabbitTemplate` |
 | `PathServiceTest` | Dijkstra correctness, node-not-found and no-path errors — mocks `CacheData` |
-| `MapControllerTest` | HTTP status codes, JSON shape, `@Valid` rejections, `MapException` → 409 |
-| `RouteControllerTest` | All `/map/route` and `/map/routes` endpoints — success and 409 cases |
-| `RouteServiceTest` | saveRoute, getRoute (forward/reversed/stale/not-found), deleteRoute, getAllRoutes, markAllStale, markStaleByPath, deleteByEndpoint, deleteAll, recalculateAllStale (including delete-on-no-path) |
+| `MapControllerTest` | HTTP status codes, JSON shape, `@Valid` rejections, `MapException` → 409; REGULAR → 409 `"Access denied"` on mutations, MANAGER → 201 — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` |
+| `RouteControllerTest` | All `/map/route` and `/map/routes` endpoints — success and 409 cases; verifies caller is passed through to service for REGULAR users — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` |
+| `RouteServiceTest` | saveRoute (createdBy set, co-ownership, no-duplicate), getRoute (ADMIN unrestricted / REGULAR ownership query / not-owner throws, forward/reversed/stale), deleteRoute (ADMIN full delete / REGULAR last-owner deletes / REGULAR removes from list / not-owner throws), getAllRoutes (ADMIN findAll / REGULAR filtered), markAllStale, markStaleByPath, deleteByEndpoint, deleteAll, recalculateAllStale (including delete-on-no-path) |
 | `RouteRecalculationConsumerTest` | Any event type (NODE_ADDED/UPDATED/DELETED_INTERMEDIATE) calls `recalculateAllStale()` |
 | `CacheDataTest` | `refresh()` replaces (not appends), list is unmodifiable, concurrent stress test |
 | `NodeDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
