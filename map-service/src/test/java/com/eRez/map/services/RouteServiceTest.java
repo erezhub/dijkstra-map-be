@@ -2,6 +2,7 @@ package com.eRez.map.services;
 
 import com.eRez.map.database.document.RouteDocument;
 import com.eRez.map.database.repository.RouteRepository;
+import com.eRez.map.dto.event.RouteRecalculatedEvent;
 import com.eRez.map.dto.response.PathResponse;
 import com.eRez.map.dto.response.PathSegment;
 import com.eRez.map.dto.response.SavedRouteResponse;
@@ -13,9 +14,11 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.userdetails.User;
 import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +27,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -31,6 +35,8 @@ class RouteServiceTest {
 
     @Mock RouteRepository routeRepository;
     @Mock PathService pathService;
+    @Mock UserLookupService userLookupService;
+    @Mock RabbitTemplate rabbitTemplate;
 
     @InjectMocks RouteService routeService;
 
@@ -42,6 +48,8 @@ class RouteServiceTest {
                 new PathSegment("A", "B", 4),
                 new PathSegment("B", "C", 6)
         ));
+        ReflectionTestUtils.setField(routeService, "exchange", "dijkstra.events");
+        ReflectionTestUtils.setField(routeService, "routeRecalculatedKey", "route.recalculated");
     }
 
     // ── saveRoute ─────────────────────────────────────────────────────────────
@@ -389,6 +397,7 @@ class RouteServiceTest {
 
         verify(routeRepository).delete(stale);
         verify(routeRepository, never()).save(any());
+        verify(rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Object.class));
     }
 
     @Test
@@ -398,6 +407,82 @@ class RouteServiceTest {
         routeService.recalculateAllStale();
 
         verifyNoMoreInteractions(routeRepository);
+    }
+
+    // ── recalculateAllStale - notifications ───────────────────────────────────
+
+    @Test
+    void recalculateAllStale_publishes_whenDistanceChanged() {
+        RouteDocument stale = routeDocument("A", "C", List.of("A", "B", "C"), List.of(4, 6), 5, true,
+                new ArrayList<>(List.of("user@x.com")));
+        when(routeRepository.findByStaleTrue()).thenReturn(List.of(stale));
+        when(pathService.getPath("A", "C")).thenReturn(abPath);
+        when(routeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userLookupService.resolveRecipients(any())).thenReturn(List.of("user@x.com", "mgr@x.com"));
+
+        routeService.recalculateAllStale();
+
+        ArgumentCaptor<RouteRecalculatedEvent> captor = ArgumentCaptor.forClass(RouteRecalculatedEvent.class);
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("route.recalculated"), captor.capture());
+        assertThat(captor.getValue().getNodeA()).isEqualTo("A");
+        assertThat(captor.getValue().getNodeB()).isEqualTo("C");
+        assertThat(captor.getValue().getDistance()).isEqualTo(10);
+        assertThat(captor.getValue().getRecipients()).containsExactlyInAnyOrder("user@x.com", "mgr@x.com");
+    }
+
+    @Test
+    void recalculateAllStale_doesNotPublish_whenRouteUnchanged() {
+        RouteDocument stale = routeDocument("A", "C", List.of("A", "B", "C"), List.of(4, 6), 10, true,
+                new ArrayList<>(List.of("user@x.com")));
+        when(routeRepository.findByStaleTrue()).thenReturn(List.of(stale));
+        when(pathService.getPath("A", "C")).thenReturn(abPath);
+        when(routeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        routeService.recalculateAllStale();
+
+        verify(rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Object.class));
+    }
+
+    @Test
+    void recalculateAllStale_doesNotPublish_whenNoRecipients() {
+        RouteDocument stale = routeDocument("A", "C", List.of("A", "B", "C"), List.of(4, 6), 5, true, null);
+        when(routeRepository.findByStaleTrue()).thenReturn(List.of(stale));
+        when(pathService.getPath("A", "C")).thenReturn(abPath);
+        when(routeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userLookupService.resolveRecipients(any())).thenReturn(List.of());
+
+        routeService.recalculateAllStale();
+
+        verify(rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Object.class));
+    }
+
+    // ── getRoute - notifications ──────────────────────────────────────────────
+
+    @Test
+    void getRoute_stale_publishesWhenChanged() {
+        RouteDocument route = routeDocument("A", "C", List.of("A", "B", "C"), List.of(4, 6), 5, true,
+                new ArrayList<>(List.of("user@x.com")));
+        when(routeRepository.findRoute("A", "C")).thenReturn(Optional.of(route));
+        when(pathService.getPath("A", "C")).thenReturn(abPath);
+        when(routeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(userLookupService.resolveRecipients(any())).thenReturn(List.of("user@x.com", "mgr@x.com"));
+
+        routeService.getRoute("A", "C", caller("admin", "ADMIN"));
+
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("route.recalculated"),
+                any(RouteRecalculatedEvent.class));
+    }
+
+    @Test
+    void getRoute_stale_doesNotPublishWhenUnchanged() {
+        RouteDocument route = routeDocument("A", "C", List.of("A", "B", "C"), List.of(4, 6), 10, true, null);
+        when(routeRepository.findRoute("A", "C")).thenReturn(Optional.of(route));
+        when(pathService.getPath("A", "C")).thenReturn(abPath);
+        when(routeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        routeService.getRoute("A", "C", caller("admin", "ADMIN"));
+
+        verify(rabbitTemplate, never()).convertAndSend(any(String.class), any(String.class), any(Object.class));
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────

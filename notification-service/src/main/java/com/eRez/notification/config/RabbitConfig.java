@@ -23,6 +23,12 @@ public class RabbitConfig {
     @Value("${rabbitmq.routing-key.user-created}")
     private String userCreatedRoutingKey;
 
+    @Value("${rabbitmq.queue.route-recalculated}")
+    private String routeRecalculatedQueue;
+
+    @Value("${rabbitmq.routing-key.route-recalculated}")
+    private String routeRecalculatedRoutingKey;
+
     @Bean
     public TopicExchange dijkstraExchange() {
         return new TopicExchange(exchange);
@@ -36,6 +42,16 @@ public class RabbitConfig {
     @Bean
     public Binding userCreatedBinding() {
         return BindingBuilder.bind(userCreatedQueue()).to(dijkstraExchange()).with(userCreatedRoutingKey);
+    }
+
+    @Bean
+    public Queue routeRecalculatedQueue() {
+        return new Queue(routeRecalculatedQueue, true);
+    }
+
+    @Bean
+    public Binding routeRecalculatedBinding() {
+        return BindingBuilder.bind(routeRecalculatedQueue()).to(dijkstraExchange()).with(routeRecalculatedRoutingKey);
     }
 
     @Bean

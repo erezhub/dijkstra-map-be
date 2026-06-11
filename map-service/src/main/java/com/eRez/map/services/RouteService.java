@@ -2,12 +2,15 @@ package com.eRez.map.services;
 
 import com.eRez.map.database.document.RouteDocument;
 import com.eRez.map.database.repository.RouteRepository;
+import com.eRez.map.dto.event.RouteRecalculatedEvent;
 import com.eRez.map.dto.response.PathResponse;
 import com.eRez.map.dto.response.PathSegment;
 import com.eRez.map.dto.response.SavedRouteResponse;
 import com.eRez.map.exception.MapException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 
@@ -23,6 +26,14 @@ public class RouteService {
 
     private final RouteRepository routeRepository;
     private final PathService pathService;
+    private final UserLookupService userLookupService;
+    private final RabbitTemplate rabbitTemplate;
+
+    @Value("${rabbitmq.exchange}")
+    private String exchange;
+
+    @Value("${rabbitmq.routing-key.route-recalculated}")
+    private String routeRecalculatedKey;
 
     public Optional<SavedRouteResponse> findCachedRoute(String from, String to) {
         return routeRepository.findRoute(from, to)
@@ -135,10 +146,26 @@ public class RouteService {
     }
 
     private RouteDocument recalculateRoute(RouteDocument route) {
+        int oldDistance = route.getDistance();
+        List<String> oldPath = route.getPath() != null ? List.copyOf(route.getPath()) : List.of();
+
         PathResponse pathResponse = pathService.getPath(route.getNodeA(), route.getNodeB());
         populateFromPathResponse(route, pathResponse);
         routeRepository.save(route);
         log.info("Route recalculated: {} → {} (distance: {})", route.getNodeA(), route.getNodeB(), pathResponse.getDistance());
+
+        List<String> newPath = route.getPath() != null ? route.getPath() : List.of();
+        boolean changed = route.getDistance() != oldDistance || !newPath.equals(oldPath);
+        if (changed) {
+            List<String> recipients = userLookupService.resolveRecipients(route.getCreatedBy());
+            if (!recipients.isEmpty()) {
+                rabbitTemplate.convertAndSend(exchange, routeRecalculatedKey,
+                        new RouteRecalculatedEvent(route.getNodeA(), route.getNodeB(),
+                                route.getDistance(), recipients));
+                log.info("Route update notification published for {} ↔ {} to {} recipient(s)",
+                        route.getNodeA(), route.getNodeB(), recipients.size());
+            }
+        }
         return route;
     }
 

@@ -21,6 +21,12 @@ public class MapRabbitConfig {
     @Value("${rabbitmq.queue.route-recalculation}")
     private String routeRecalculationQueue;
 
+    @Value("${rabbitmq.queue.route-recalculated}")
+    private String routeRecalculatedQueue;
+
+    @Value("${rabbitmq.routing-key.route-recalculated}")
+    private String routeRecalculatedRoutingKey;
+
     @Bean
     public TopicExchange dijkstraExchange() {
         return new TopicExchange(exchange);
@@ -36,6 +42,18 @@ public class MapRabbitConfig {
         return BindingBuilder.bind(routeRecalculationQueue())
                 .to(dijkstraExchange())
                 .with("map.node.*");
+    }
+
+    @Bean
+    public Queue routeRecalculatedQueue() {
+        return new Queue(routeRecalculatedQueue, true);
+    }
+
+    @Bean
+    public Binding routeRecalculatedBinding() {
+        return BindingBuilder.bind(routeRecalculatedQueue())
+                .to(dijkstraExchange())
+                .with(routeRecalculatedRoutingKey);
     }
 
     @Bean
