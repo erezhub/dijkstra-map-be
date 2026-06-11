@@ -64,9 +64,12 @@ docker build -f DockerfileNotificationService -t notification-service:latest .
 | `map-service` | 8080 | Waits for MongoDB + RabbitMQ health checks |
 | `user-service` | 8081 | Waits for MongoDB + RabbitMQ health checks |
 | `notification-service` | — | No HTTP; waits for RabbitMQ + MailHog |
+| `frontend` | 3000 | React/Vite SPA served by nginx; built from `../dijkstra-map-fe` |
 | `mongo-express` | 8082 | Web UI for browsing MongoDB — `http://localhost:8082` |
 
 **Dockerfiles**: multi-stage builds — Maven build stage (`maven:3.9-eclipse-temurin-21`) then slim runtime (`eclipse-temurin:21-jre-jammy`). Each Dockerfile copies only the pom.xml of the other services (not their `src`) so Maven can resolve the parent module graph without compiling unused code. notification-service does not depend on `common` so it only copies `common/pom.xml`.
+
+**Frontend Dockerfile** (`dijkstra-map-fe/Dockerfile`): `node:22-alpine` build stage runs `npm ci && npm run build`; `nginx:alpine` runtime stage serves the `dist/` output. `VITE_MAP_URL` and `VITE_USER_URL` are build args (default `http://localhost:8080/8081`) baked into the JS bundle — override via env vars in `.env` if deploying to a non-localhost host. The `nginx.conf` uses `try_files … /index.html` for React Router.
 
 **`spring-boot-maven-plugin`** must be declared in each service's `pom.xml` for `mvn package` to produce an executable fat JAR. Without it, the plugin only exists in `pluginManagement` (from `spring-boot-starter-parent`) and `mvn package` produces a plain JAR with no `Main-Class`.
 
