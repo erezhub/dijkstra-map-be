@@ -172,46 +172,55 @@ public class NodeService {
             throw new MapException("Node not found: " + nodeName);
         }
 
-        Map<String, Integer> newConnections = new HashMap<>();
-        request.getConnections().forEach((targetName, weight) -> {
-            NodeDocument targetDoc = nameToDoc.get(targetName);
-            if (targetDoc != null) {
-                newConnections.put(targetDoc.getId(), weight);
-            } else {
-                log.warn("Skipping unknown connection target '{}' for node '{}'", targetName, nodeName);
-            }
-        });
-
         Map<String, NodeDocument> toUpdate = new HashMap<>();
+        boolean connectionsChanged = request.getConnections() != null;
 
-        nodeDoc.getConnections().forEach((targetId, weight) -> {
-            if (!newConnections.containsKey(targetId)) {
+        if (connectionsChanged) {
+            Map<String, Integer> newConnections = new HashMap<>();
+            request.getConnections().forEach((targetName, weight) -> {
+                NodeDocument targetDoc = nameToDoc.get(targetName);
+                if (targetDoc != null) {
+                    newConnections.put(targetDoc.getId(), weight);
+                } else {
+                    log.warn("Skipping unknown connection target '{}' for node '{}'", targetName, nodeName);
+                }
+            });
+
+            nodeDoc.getConnections().forEach((targetId, weight) -> {
+                if (!newConnections.containsKey(targetId)) {
+                    NodeDocument targetDoc = idToDoc.get(targetId);
+                    if (targetDoc != null) {
+                        log.debug("Removing connection from '{}' to '{}'", nodeName, targetDoc.getName());
+                        targetDoc.getConnections().remove(nodeDoc.getId());
+                        toUpdate.put(targetId, targetDoc);
+                    }
+                }
+            });
+
+            newConnections.forEach((targetId, weight) -> {
                 NodeDocument targetDoc = idToDoc.get(targetId);
                 if (targetDoc != null) {
-                    log.debug("Removing connection from '{}' to '{}'", nodeName, targetDoc.getName());
-                    targetDoc.getConnections().remove(nodeDoc.getId());
+                    log.debug("Adding/updating connection from '{}' to '{}' (weight: {})", nodeName, targetDoc.getName(), weight);
+                    targetDoc.getConnections().put(nodeDoc.getId(), weight);
                     toUpdate.put(targetId, targetDoc);
                 }
-            }
-        });
+            });
 
-        newConnections.forEach((targetId, weight) -> {
-            NodeDocument targetDoc = idToDoc.get(targetId);
-            if (targetDoc != null) {
-                log.debug("Adding/updating connection from '{}' to '{}' (weight: {})", nodeName, targetDoc.getName(), weight);
-                targetDoc.getConnections().put(nodeDoc.getId(), weight);
-                toUpdate.put(targetId, targetDoc);
-            }
-        });
+            nodeDoc.setConnections(newConnections);
+        }
 
-        nodeDoc.setConnections(newConnections);
-        nodeDoc.setPosition(request.getPosition());
+        if (request.getPosition() != null) {
+            nodeDoc.setPosition(request.getPosition());
+        }
+
         toUpdate.put(nodeDoc.getId(), nodeDoc);
         nodeRepository.saveAll(toUpdate.values());
         cacheData.refresh();
 
-        routeService.markAllStale();
-        rabbitTemplate.convertAndSend(exchange, "map.node.updated", new NodeChangedEvent("NODE_UPDATED", nodeName));
+        if (connectionsChanged) {
+            routeService.markAllStale();
+            rabbitTemplate.convertAndSend(exchange, "map.node.updated", new NodeChangedEvent("NODE_UPDATED", nodeName));
+        }
         log.info("Node '{}' updated, {} document(s) affected", nodeName, toUpdate.size());
     }
 

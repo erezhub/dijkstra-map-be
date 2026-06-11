@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -246,6 +247,23 @@ class NodeServiceTest {
 
         assertThat(amsterdam.getPosition().getX()).isEqualTo(3.0);
         assertThat(amsterdam.getPosition().getY()).isEqualTo(4.0);
+    }
+
+    @Test
+    void updateNode_positionOnly_preservesConnectionsAndSkipsEvent() {
+        when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
+
+        UpdateNodeRequest request = new UpdateNodeRequest();
+        request.setPosition(position(5.0, 9.0)); // connections is null — simulates drag
+
+        nodeService.updateNode("Amsterdam", request);
+
+        assertThat(amsterdam.getPosition().getX()).isEqualTo(5.0);
+        assertThat(amsterdam.getPosition().getY()).isEqualTo(9.0);
+        assertThat(amsterdam.getConnections()).containsKey(ID_B); // unchanged
+        assertThat(berlin.getConnections()).containsKey(ID_A);    // unchanged
+        verifyNoInteractions(routeService);
+        verify(rabbitTemplate, never()).convertAndSend(any(), any(String.class), any(Object.class));
     }
 
     // ── deleteNode ────────────────────────────────────────────────────────────
