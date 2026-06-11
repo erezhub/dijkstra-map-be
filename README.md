@@ -1,3 +1,6 @@
+It all began when I watched this [video](https://www.youtube.com/watch?v=kS-CGkiPetQ) on how Google Maps work, which are heavily based on Dijkstra's algorithm.  So I thought to myself — why not try to create that algorithm on my own?</br>
+One thing led to another, and I ended up with this:
+
 # Dijkstra Map Backend
 
 Three Spring Boot services sharing a `common` module:
