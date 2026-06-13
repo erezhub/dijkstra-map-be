@@ -32,11 +32,58 @@ class CacheDataTest {
     }
 
     private NodeDocument node(String id) {
+        return node(id, id);
+    }
+
+    private NodeDocument node(String id, String name) {
         NodeDocument d = new NodeDocument();
         d.setId(id);
-        d.setName(id);
+        d.setName(name);
         d.setConnections(java.util.Map.of());
         return d;
+    }
+
+    @Test
+    void getIdToDoc_mapsNodeIdsToDocuments() {
+        when(nodeRepository.findAll()).thenReturn(List.of(node("id-a", "Alpha"), node("id-b", "Beta")));
+        cacheData.refresh();
+
+        assertThat(cacheData.getIdToDoc()).containsKey("id-a").containsKey("id-b");
+        assertThat(cacheData.getIdToDoc().get("id-a").getName()).isEqualTo("Alpha");
+    }
+
+    @Test
+    void getIdToDoc_updatesOnRefresh() {
+        when(nodeRepository.findAll())
+                .thenReturn(List.of(node("id-a", "Alpha")))
+                .thenReturn(List.of(node("id-b", "Beta")));
+
+        cacheData.refresh();
+        assertThat(cacheData.getIdToDoc()).containsKey("id-a").doesNotContainKey("id-b");
+
+        cacheData.refresh();
+        assertThat(cacheData.getIdToDoc()).containsKey("id-b").doesNotContainKey("id-a");
+    }
+
+    @Test
+    void getIdToName_mapsNodeIdsToNames() {
+        when(nodeRepository.findAll()).thenReturn(List.of(node("id-a", "Alpha"), node("id-b", "Beta")));
+        cacheData.refresh();
+
+        assertThat(cacheData.getIdToName()).containsEntry("id-a", "Alpha").containsEntry("id-b", "Beta");
+    }
+
+    @Test
+    void getIdToName_updatesOnRefresh() {
+        when(nodeRepository.findAll())
+                .thenReturn(List.of(node("id-a", "Alpha")))
+                .thenReturn(List.of(node("id-a", "AlphaRenamed")));
+
+        cacheData.refresh();
+        assertThat(cacheData.getIdToName()).containsEntry("id-a", "Alpha");
+
+        cacheData.refresh();
+        assertThat(cacheData.getIdToName()).containsEntry("id-a", "AlphaRenamed");
     }
 
     @Test
@@ -80,7 +127,8 @@ class CacheDataTest {
                     if (writer) {
                         cacheData.refresh();
                     } else {
-                        cacheData.getNodes().forEach(NodeDocument::getName); // iterate while writers run
+                        cacheData.getNodes().forEach(NodeDocument::getName);
+                        cacheData.getIdToName().get("a");
                     }
                 } catch (Throwable t) {
                     errors.add(t);

@@ -62,9 +62,9 @@ class RouteControllerTest {
     }
 
     private SavedRouteResponse sampleResponse() {
-        return new SavedRouteResponse("A", "C", 10, List.of(
-                new PathSegment("A", "B", 4),
-                new PathSegment("B", "C", 6)
+        return new SavedRouteResponse("id-A", "A", "id-C", "C", 10, List.of(
+                new PathSegment("id-A", "A", "id-B", "B", 4),
+                new PathSegment("id-B", "B", "id-C", "C", 6)
         ), List.of("admin"));
     }
 
@@ -72,12 +72,14 @@ class RouteControllerTest {
 
     @Test
     void saveRoute_returns201WithBody() throws Exception {
-        when(routeService.saveRoute(eq("A"), eq("C"), any())).thenReturn(sampleResponse());
+        when(routeService.saveRoute(eq("id-A"), eq("id-C"), any())).thenReturn(sampleResponse());
 
-        mockMvc.perform(post("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(post("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.nodeA").value("A"))
                 .andExpect(jsonPath("$.nodeB").value("C"))
+                .andExpect(jsonPath("$.nodeAId").value("id-A"))
+                .andExpect(jsonPath("$.nodeBId").value("id-C"))
                 .andExpect(jsonPath("$.distance").value(10))
                 .andExpect(jsonPath("$.path.length()").value(2))
                 .andExpect(jsonPath("$.path[0].from").value("A"))
@@ -86,21 +88,21 @@ class RouteControllerTest {
 
     @Test
     void saveRoute_serviceThrows_returns409() throws Exception {
-        when(routeService.saveRoute(eq("A"), eq("GONE"), any()))
-                .thenThrow(new MapException("Node not found: GONE"));
+        when(routeService.saveRoute(eq("id-A"), eq("id-GONE"), any()))
+                .thenThrow(new MapException("Node not found: id-GONE"));
 
-        mockMvc.perform(post("/map/route").param("from", "A").param("to", "GONE"))
+        mockMvc.perform(post("/map/route").param("from", "id-A").param("to", "id-GONE"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Node not found: GONE"));
+                .andExpect(jsonPath("$.message").value("Node not found: id-GONE"));
     }
 
     // ── GET /map/route ────────────────────────────────────────────────────────
 
     @Test
     void getRoute_returns200WithBody() throws Exception {
-        when(routeService.getRoute(eq("A"), eq("C"), any())).thenReturn(sampleResponse());
+        when(routeService.getRoute(eq("id-A"), eq("id-C"), any())).thenReturn(sampleResponse());
 
-        mockMvc.perform(get("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(get("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.nodeA").value("A"))
                 .andExpect(jsonPath("$.nodeB").value("C"))
@@ -109,21 +111,21 @@ class RouteControllerTest {
 
     @Test
     void getRoute_notFound_returns409() throws Exception {
-        when(routeService.getRoute(eq("A"), eq("C"), any()))
-                .thenThrow(new MapException("No saved route from 'A' to 'C'"));
+        when(routeService.getRoute(eq("id-A"), eq("id-C"), any()))
+                .thenThrow(new MapException("No saved route from 'id-A' to 'id-C'"));
 
-        mockMvc.perform(get("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(get("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("No saved route from 'A' to 'C'"));
+                .andExpect(jsonPath("$.message").value("No saved route from 'id-A' to 'id-C'"));
     }
 
     @Test
     void getRoute_regularUser_passesCallerToService() throws Exception {
         setAuth("user@x.com", "REGULAR");
-        when(routeService.getRoute(eq("A"), eq("C"), argThat(u -> u.getUsername().equals("user@x.com"))))
+        when(routeService.getRoute(eq("id-A"), eq("id-C"), argThat(u -> u.getUsername().equals("user@x.com"))))
                 .thenReturn(sampleResponse());
 
-        mockMvc.perform(get("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(get("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isOk());
     }
 
@@ -131,30 +133,30 @@ class RouteControllerTest {
 
     @Test
     void deleteRoute_returns204() throws Exception {
-        mockMvc.perform(delete("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(delete("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isNoContent());
 
-        verify(routeService).deleteRoute(eq("A"), eq("C"), any());
+        verify(routeService).deleteRoute(eq("id-A"), eq("id-C"), any());
     }
 
     @Test
     void deleteRoute_notFound_returns409() throws Exception {
-        doThrow(new MapException("No saved route from 'A' to 'C'"))
-                .when(routeService).deleteRoute(eq("A"), eq("C"), any());
+        doThrow(new MapException("No saved route from 'id-A' to 'id-C'"))
+                .when(routeService).deleteRoute(eq("id-A"), eq("id-C"), any());
 
-        mockMvc.perform(delete("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(delete("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("No saved route from 'A' to 'C'"));
+                .andExpect(jsonPath("$.message").value("No saved route from 'id-A' to 'id-C'"));
     }
 
     @Test
     void deleteRoute_regularUser_passesCallerToService() throws Exception {
         setAuth("user@x.com", "REGULAR");
 
-        mockMvc.perform(delete("/map/route").param("from", "A").param("to", "C"))
+        mockMvc.perform(delete("/map/route").param("from", "id-A").param("to", "id-C"))
                 .andExpect(status().isNoContent());
 
-        verify(routeService).deleteRoute(eq("A"), eq("C"),
+        verify(routeService).deleteRoute(eq("id-A"), eq("id-C"),
                 argThat(u -> u.getUsername().equals("user@x.com")));
     }
 
@@ -164,7 +166,8 @@ class RouteControllerTest {
     void getAllRoutes_returns200WithList() throws Exception {
         when(routeService.getAllRoutes(any())).thenReturn(List.of(
                 sampleResponse(),
-                new SavedRouteResponse("X", "Y", 3, List.of(new PathSegment("X", "Y", 3)), List.of("admin"))
+                new SavedRouteResponse("id-X", "X", "id-Y", "Y", 3,
+                        List.of(new PathSegment("id-X", "X", "id-Y", "Y", 3)), List.of("admin"))
         ));
 
         mockMvc.perform(get("/map/routes"))

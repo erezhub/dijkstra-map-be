@@ -10,6 +10,9 @@ import org.springframework.stereotype.Component;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Component
 @RequiredArgsConstructor
@@ -19,15 +22,29 @@ public class CacheData {
     private final NodeRepository nodeRepository;
     @Getter
     private volatile List<NodeDocument> nodes = Collections.emptyList();
+    @Getter
+    private volatile Map<String, String> idToName = Collections.emptyMap();
+    @Getter
+    private volatile Map<String, NodeDocument> idToDoc = Collections.emptyMap();
 
     @PostConstruct
     private void initCache() {
-        nodes = Collections.unmodifiableList(nodeRepository.findAll());
+        List<NodeDocument> fresh = Collections.unmodifiableList(nodeRepository.findAll());
+        nodes = fresh;
+        idToName = Collections.unmodifiableMap(
+                fresh.stream().collect(Collectors.toMap(NodeDocument::getId, NodeDocument::getName)));
+        idToDoc = Collections.unmodifiableMap(
+                fresh.stream().collect(Collectors.toMap(NodeDocument::getId, Function.identity())));
         log.info("Cache initialized with {} node(s)", nodes.size());
     }
 
     public void refresh() {
-        nodes = Collections.unmodifiableList(nodeRepository.findAll());
+        List<NodeDocument> fresh = Collections.unmodifiableList(nodeRepository.findAll());
+        nodes = fresh;
+        idToName = Collections.unmodifiableMap(
+                fresh.stream().collect(Collectors.toMap(NodeDocument::getId, NodeDocument::getName)));
+        idToDoc = Collections.unmodifiableMap(
+                fresh.stream().collect(Collectors.toMap(NodeDocument::getId, Function.identity())));
         log.debug("Cache refreshed with {} node(s)", nodes.size());
     }
 }

@@ -18,7 +18,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -27,22 +26,21 @@ public class PathService {
 
     private final CacheData cacheData;
 
-    public PathResponse getPath(String fromName, String toName) {
-        log.info("Finding path from '{}' to '{}'", fromName, toName);
+    public PathResponse getPath(String fromId, String toId) {
         List<NodeDocument> allDocs = cacheData.getNodes();
 
         NodeDocument fromDoc = allDocs.stream()
-                .filter(d -> fromName.equals(d.getName()))
+                .filter(d -> fromId.equals(d.getId()))
                 .findFirst()
-                .orElseThrow(() -> new MapException("Node not found: " + fromName));
+                .orElseThrow(() -> new MapException("Node not found: " + fromId));
         NodeDocument toDoc = allDocs.stream()
-                .filter(d -> toName.equals(d.getName()))
+                .filter(d -> toId.equals(d.getId()))
                 .findFirst()
-                .orElseThrow(() -> new MapException("Node not found: " + toName));
+                .orElseThrow(() -> new MapException("Node not found: " + toId));
+
+        log.info("Finding path from '{}' to '{}'", fromDoc.getName(), toDoc.getName());
 
         Map<String, MapNode> graph = buildGraph(allDocs);
-        Map<String, String> idToName = allDocs.stream()
-                .collect(Collectors.toMap(NodeDocument::getId, NodeDocument::getName));
 
         Map<String, Integer> distances = new HashMap<>();
         Set<MapNode> visited = new HashSet<>();
@@ -51,9 +49,9 @@ public class PathService {
         PriorityQueue<MapNode> pq = new PriorityQueue<>(Comparator.comparingInt(n -> distances.get(n.getId())));
         pq.offer(graph.get(fromDoc.getId()));
 
-        MapNode toNode = runDijkstra(graph.get(fromDoc.getId()), toDoc.getId(), distances, visited, pq, idToName);
-        PathResponse response = buildPathResponse(toNode, distances, idToName);
-        log.info("Path found from '{}' to '{}': distance={}, hops={}", fromName, toName, response.getDistance(), response.getPath().size());
+        MapNode toNode = runDijkstra(graph.get(fromDoc.getId()), toDoc.getId(), distances, visited, pq);
+        PathResponse response = buildPathResponse(toNode, distances);
+        log.info("Path found from '{}' to '{}': distance={}, hops={}", fromDoc.getName(), toDoc.getName(), response.getDistance(), response.getPath().size());
         return response;
     }
 
@@ -82,8 +80,7 @@ public class PathService {
     private MapNode runDijkstra(MapNode from, String toId,
                                 Map<String, Integer> distances,
                                 Set<MapNode> visited,
-                                PriorityQueue<MapNode> pq,
-                                Map<String, String> idToName) {
+                                PriorityQueue<MapNode> pq) {
         if (from.getId().equals(toId)) {
             return from;
         }
@@ -106,19 +103,24 @@ public class PathService {
 
         MapNode nextNode = findNextNode(visited, pq);
         if (nextNode == null) {
+            Map<String, String> idToName = cacheData.getIdToName();
             throw new MapException(String.format("No path exists from '%s' to '%s'",
                     idToName.getOrDefault(fromId, fromId), idToName.getOrDefault(toId, toId)));
         }
-        return runDijkstra(nextNode, toId, distances, visited, pq, idToName);
+        return runDijkstra(nextNode, toId, distances, visited, pq);
     }
 
-    private PathResponse buildPathResponse(MapNode toNode, Map<String, Integer> distances, Map<String, String> idToName) {
+    private PathResponse buildPathResponse(MapNode toNode, Map<String, Integer> distances) {
+        Map<String, String> idToName = cacheData.getIdToName();
         List<PathSegment> segments = new ArrayList<>();
         MapNode current = toNode;
         while (current.getShortestPath() != null) {
             MapNode prev = current.getShortestPath();
             int segmentDist = distances.get(current.getId()) - distances.get(prev.getId());
-            segments.add(0, new PathSegment(idToName.get(prev.getId()), idToName.get(current.getId()), segmentDist));
+            segments.add(0, new PathSegment(
+                    prev.getId(), idToName.get(prev.getId()),
+                    current.getId(), idToName.get(current.getId()),
+                    segmentDist));
             current = prev;
         }
         return new PathResponse(distances.get(toNode.getId()), segments);

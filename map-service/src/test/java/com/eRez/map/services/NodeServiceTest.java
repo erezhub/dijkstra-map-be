@@ -5,6 +5,7 @@ import com.eRez.map.database.document.NodeDocument;
 import com.eRez.map.database.repository.NodeRepository;
 import com.eRez.map.dto.Position;
 import com.eRez.map.dto.event.NodeChangedEvent;
+import com.eRez.map.dto.request.AddNodeRequest;
 import com.eRez.map.dto.request.CreateMapRequest;
 import com.eRez.map.dto.request.NodeRequest;
 import com.eRez.map.dto.request.UpdateNodeRequest;
@@ -33,6 +34,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -62,6 +64,8 @@ class NodeServiceTest {
         berlin    = doc(ID_B, "Berlin",    new HashMap<>(Map.of(ID_A, 7)));
         paris     = doc(ID_C, "Paris",     new HashMap<>());
         ReflectionTestUtils.setField(nodeService, "exchange", "dijkstra.events");
+        lenient().when(cacheData.getIdToDoc())
+                .thenReturn(Map.of(ID_A, amsterdam, ID_B, berlin, ID_C, paris));
     }
 
     private NodeDocument doc(String id, String name, Map<String, Integer> connections) {
@@ -74,6 +78,13 @@ class NodeServiceTest {
 
     private NodeRequest nodeRequest(String name, Map<String, Integer> connections) {
         NodeRequest r = new NodeRequest();
+        r.setName(name);
+        r.setConnections(connections);
+        return r;
+    }
+
+    private AddNodeRequest addNodeRequest(String name, Map<String, Integer> connections) {
+        AddNodeRequest r = new AddNodeRequest();
         r.setName(name);
         r.setConnections(connections);
         return r;
@@ -154,7 +165,7 @@ class NodeServiceTest {
     void addNode_newNode_savedWithBidirectionalConnection() {
         when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
 
-        nodeService.addNode(nodeRequest("Prague", Map.of("Berlin", 5)));
+        nodeService.addNode(addNodeRequest("Prague", Map.of(ID_B, 5)));
 
         verify(nodeRepository).saveAll(anyCollection());
         verify(cacheData).refresh();
@@ -167,7 +178,7 @@ class NodeServiceTest {
     void addNode_nodeAlreadyExists_throws() {
         when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam)));
 
-        assertThatThrownBy(() -> nodeService.addNode(nodeRequest("Amsterdam", Map.of())))
+        assertThatThrownBy(() -> nodeService.addNode(addNodeRequest("Amsterdam", Map.of())))
                 .isInstanceOf(MapException.class)
                 .hasMessageContaining("Node already exists");
 
@@ -178,7 +189,7 @@ class NodeServiceTest {
     void addNode_persistsPosition() {
         when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam)));
 
-        NodeRequest request = nodeRequest("Prague", Map.of());
+        AddNodeRequest request = addNodeRequest("Prague", Map.of());
         request.setPosition(position(5.0, 10.0));
 
         nodeService.addNode(request);
@@ -201,9 +212,9 @@ class NodeServiceTest {
         when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin, paris)));
 
         UpdateNodeRequest request = new UpdateNodeRequest();
-        request.setConnections(Map.of("Berlin", 7, "Paris", 3));
+        request.setConnections(Map.of(ID_B, 7, ID_C, 3));
 
-        nodeService.updateNode("Amsterdam", request);
+        nodeService.updateNode(ID_A, request);
 
         verify(nodeRepository).saveAll(anyCollection());
         assertThat(paris.getConnections()).containsKey(ID_A);
@@ -218,7 +229,7 @@ class NodeServiceTest {
         UpdateNodeRequest request = new UpdateNodeRequest();
         request.setConnections(Map.of()); // drop all connections
 
-        nodeService.updateNode("Amsterdam", request);
+        nodeService.updateNode(ID_A, request);
 
         assertThat(berlin.getConnections()).doesNotContainKey(ID_A);
     }
@@ -230,7 +241,7 @@ class NodeServiceTest {
         UpdateNodeRequest request = new UpdateNodeRequest();
         request.setConnections(Map.of());
 
-        assertThatThrownBy(() -> nodeService.updateNode("Unknown", request))
+        assertThatThrownBy(() -> nodeService.updateNode("id-unknown", request))
                 .isInstanceOf(MapException.class)
                 .hasMessageContaining("Node not found");
     }
@@ -240,10 +251,10 @@ class NodeServiceTest {
         when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
 
         UpdateNodeRequest request = new UpdateNodeRequest();
-        request.setConnections(Map.of("Berlin", 7));
+        request.setConnections(Map.of(ID_B, 7));
         request.setPosition(position(3.0, 4.0));
 
-        nodeService.updateNode("Amsterdam", request);
+        nodeService.updateNode(ID_A, request);
 
         assertThat(amsterdam.getPosition().getX()).isEqualTo(3.0);
         assertThat(amsterdam.getPosition().getY()).isEqualTo(4.0);
@@ -256,7 +267,7 @@ class NodeServiceTest {
         UpdateNodeRequest request = new UpdateNodeRequest();
         request.setPosition(position(5.0, 9.0)); // connections is null — simulates drag
 
-        nodeService.updateNode("Amsterdam", request);
+        nodeService.updateNode(ID_A, request);
 
         assertThat(amsterdam.getPosition().getX()).isEqualTo(5.0);
         assertThat(amsterdam.getPosition().getY()).isEqualTo(9.0);
@@ -266,27 +277,51 @@ class NodeServiceTest {
         verify(rabbitTemplate, never()).convertAndSend(any(), any(String.class), any(Object.class));
     }
 
+    @Test
+    void updateNode_rename_updatesNameOnly() {
+        when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
+
+        UpdateNodeRequest request = new UpdateNodeRequest();
+        request.setNewName("NewAmsterdam");
+
+        nodeService.updateNode(ID_A, request);
+
+        assertThat(amsterdam.getName()).isEqualTo("NewAmsterdam");
+        verifyNoInteractions(routeService);
+        verify(rabbitTemplate, never()).convertAndSend(any(), any(String.class), any(Object.class));
+    }
+
+    @Test
+    void updateNode_renameToExistingName_throws() {
+        when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
+
+        UpdateNodeRequest request = new UpdateNodeRequest();
+        request.setNewName("Berlin");
+
+        assertThatThrownBy(() -> nodeService.updateNode(ID_A, request))
+                .isInstanceOf(MapException.class)
+                .hasMessageContaining("Node already exists: Berlin");
+    }
+
     // ── deleteNode ────────────────────────────────────────────────────────────
 
     @Test
     void deleteNode_removesNodeAndUnlinksNeighbours() {
         when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam, berlin)));
 
-        nodeService.deleteNode("Amsterdam");
+        nodeService.deleteNode(ID_A);
 
         verify(nodeRepository).saveAll(anyList());
         verify(nodeRepository).delete(amsterdam);
         assertThat(berlin.getConnections()).doesNotContainKey(ID_A);
-        verify(routeService).deleteByEndpoint("Amsterdam");
-        verify(routeService).markStaleByPath("Amsterdam");
+        verify(routeService).deleteByEndpoint(ID_A);
+        verify(routeService).markStaleByPath(ID_A);
         verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("map.node.deleted"), any(NodeChangedEvent.class));
     }
 
     @Test
     void deleteNode_nodeNotFound_throws() {
-        when(cacheData.getNodes()).thenReturn(new ArrayList<>(List.of(amsterdam)));
-
-        assertThatThrownBy(() -> nodeService.deleteNode("Unknown"))
+        assertThatThrownBy(() -> nodeService.deleteNode("id-unknown"))
                 .isInstanceOf(MapException.class)
                 .hasMessageContaining("Node not found");
     }
@@ -294,7 +329,7 @@ class NodeServiceTest {
     // ── getMap ────────────────────────────────────────────────────────────────
 
     @Test
-    void getMap_returnsNodesWithNamesInsteadOfIds() {
+    void getMap_returnsNodesWithIdAndName() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam, berlin));
 
         MapResponse response = nodeService.getMap();
@@ -303,10 +338,13 @@ class NodeServiceTest {
         assertThat(response.getNodes())
                 .extracting(NodeResponse::getName)
                 .containsExactlyInAnyOrder("Amsterdam", "Berlin");
+        assertThat(response.getNodes())
+                .extracting(NodeResponse::getId)
+                .containsExactlyInAnyOrder(ID_A, ID_B);
         response.getNodes().stream()
                 .filter(n -> "Amsterdam".equals(n.getName()))
                 .findFirst()
-                .ifPresent(n -> assertThat(n.getConnections()).containsKey("Berlin"));
+                .ifPresent(n -> assertThat(n.getConnections()).containsKey(ID_B));
     }
 
     @Test

@@ -8,7 +8,9 @@ import java.util.List;
 @Getter
 @AllArgsConstructor
 public class SavedRouteResponse {
+    private final String nodeAId;
     private final String nodeA;
+    private final String nodeBId;
     private final String nodeB;
     private final int distance;
     private final List<PathSegment> path;

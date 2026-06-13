@@ -20,7 +20,7 @@ public class RouteDocument implements Auditable {
 
     private String nodeA;
     private String nodeB;
-    private List<String> path;              // ordered node names, nodeA → nodeB inclusive
+    private List<String> path;              // ordered node IDs, nodeA → nodeB inclusive
     private List<Integer> segmentDistances; // per-hop distances matching path gaps
     private int distance;
     private boolean stale;

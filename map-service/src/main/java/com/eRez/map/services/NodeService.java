@@ -4,6 +4,7 @@ import com.eRez.map.data.CacheData;
 import com.eRez.map.database.document.NodeDocument;
 import com.eRez.map.database.repository.NodeRepository;
 import com.eRez.map.dto.event.NodeChangedEvent;
+import com.eRez.map.dto.request.AddNodeRequest;
 import com.eRez.map.dto.request.CreateMapRequest;
 import com.eRez.map.dto.request.NodeRequest;
 import com.eRez.map.dto.request.UpdateNodeRequest;
@@ -39,20 +40,10 @@ public class NodeService {
 
     public MapResponse getMap() {
         List<NodeDocument> allDocs = cacheData.getNodes();
-        Map<String, String> idToName = allDocs.stream()
-                .collect(Collectors.toMap(NodeDocument::getId, NodeDocument::getName));
 
         List<NodeResponse> nodes = allDocs.stream()
-                .map(doc -> {
-                    Map<String, Integer> connections = new HashMap<>();
-                    doc.getConnections().forEach((targetId, weight) -> {
-                        String targetName = idToName.get(targetId);
-                        if (targetName != null) {
-                            connections.put(targetName, weight);
-                        }
-                    });
-                    return new NodeResponse(doc.getName(), doc.getPosition(), connections);
-                })
+                .map(doc -> new NodeResponse(doc.getId(), doc.getName(), doc.getPosition(),
+                        new HashMap<>(doc.getConnections())))
                 .collect(Collectors.toList());
 
         return new MapResponse(nodes);
@@ -117,7 +108,7 @@ public class NodeService {
         }
     }
 
-    public void addNode(NodeRequest request) {
+    public void addNode(AddNodeRequest request) {
         log.info("Adding node '{}'", request.getName());
         boolean exists = cacheData.getNodes().stream()
                 .anyMatch(d -> request.getName().equals(d.getName()));
@@ -125,9 +116,7 @@ public class NodeService {
             throw new MapException("Node already exists: " + request.getName());
         }
 
-        List<NodeDocument> allDocs = cacheData.getNodes();
-        Map<String, NodeDocument> nameToDoc = allDocs.stream()
-                .collect(Collectors.toMap(NodeDocument::getName, Function.identity()));
+        Map<String, NodeDocument> idToDoc = cacheData.getIdToDoc();
 
         String newId = UUID.randomUUID().toString();
         NodeDocument newNode = new NodeDocument();
@@ -138,14 +127,14 @@ public class NodeService {
         Map<String, NodeDocument> toUpdate = new HashMap<>();
         Map<String, Integer> newConnections = new HashMap<>();
 
-        request.getConnections().forEach((targetName, weight) -> {
-            NodeDocument targetDoc = nameToDoc.get(targetName);
+        request.getConnections().forEach((targetId, weight) -> {
+            NodeDocument targetDoc = idToDoc.get(targetId);
             if (targetDoc != null) {
-                newConnections.put(targetDoc.getId(), weight);
+                newConnections.put(targetId, weight);
                 targetDoc.getConnections().put(newId, weight);
-                toUpdate.put(targetDoc.getId(), targetDoc);
+                toUpdate.put(targetId, targetDoc);
             } else {
-                log.warn("Skipping unknown connection target '{}' for node '{}'", targetName, request.getName());
+                log.warn("Skipping unknown connection target '{}' for node '{}'", targetId, request.getName());
             }
         });
 
@@ -159,17 +148,22 @@ public class NodeService {
         log.info("Node '{}' added with {} connection(s)", request.getName(), newConnections.size());
     }
 
-    public void updateNode(String nodeName, UpdateNodeRequest request) {
-        log.info("Updating node '{}'", nodeName);
+    public void updateNode(String nodeId, UpdateNodeRequest request) {
+        log.info("Updating node with id '{}'", nodeId);
         List<NodeDocument> allDocs = cacheData.getNodes();
         Map<String, NodeDocument> nameToDoc = allDocs.stream()
                 .collect(Collectors.toMap(NodeDocument::getName, Function.identity()));
-        Map<String, NodeDocument> idToDoc = allDocs.stream()
-                .collect(Collectors.toMap(NodeDocument::getId, Function.identity()));
+        Map<String, NodeDocument> idToDoc = cacheData.getIdToDoc();
 
-        NodeDocument nodeDoc = nameToDoc.get(nodeName);
+        NodeDocument nodeDoc = idToDoc.get(nodeId);
         if (nodeDoc == null) {
-            throw new MapException("Node not found: " + nodeName);
+            throw new MapException("Node not found: " + nodeId);
+        }
+
+        if (request.getNewName() != null && !request.getNewName().equals(nodeDoc.getName())) {
+            if (nameToDoc.containsKey(request.getNewName()))
+                throw new MapException("Node already exists: " + request.getNewName());
+            nodeDoc.setName(request.getNewName());
         }
 
         Map<String, NodeDocument> toUpdate = new HashMap<>();
@@ -177,12 +171,11 @@ public class NodeService {
 
         if (connectionsChanged) {
             Map<String, Integer> newConnections = new HashMap<>();
-            request.getConnections().forEach((targetName, weight) -> {
-                NodeDocument targetDoc = nameToDoc.get(targetName);
-                if (targetDoc != null) {
-                    newConnections.put(targetDoc.getId(), weight);
+            request.getConnections().forEach((targetId, weight) -> {
+                if (idToDoc.containsKey(targetId)) {
+                    newConnections.put(targetId, weight);
                 } else {
-                    log.warn("Skipping unknown connection target '{}' for node '{}'", targetName, nodeName);
+                    log.warn("Skipping unknown connection target '{}' for node '{}'", targetId, nodeDoc.getName());
                 }
             });
 
@@ -190,7 +183,7 @@ public class NodeService {
                 if (!newConnections.containsKey(targetId)) {
                     NodeDocument targetDoc = idToDoc.get(targetId);
                     if (targetDoc != null) {
-                        log.debug("Removing connection from '{}' to '{}'", nodeName, targetDoc.getName());
+                        log.debug("Removing connection from '{}' to '{}'", nodeDoc.getName(), targetDoc.getName());
                         targetDoc.getConnections().remove(nodeDoc.getId());
                         toUpdate.put(targetId, targetDoc);
                     }
@@ -200,7 +193,7 @@ public class NodeService {
             newConnections.forEach((targetId, weight) -> {
                 NodeDocument targetDoc = idToDoc.get(targetId);
                 if (targetDoc != null) {
-                    log.debug("Adding/updating connection from '{}' to '{}' (weight: {})", nodeName, targetDoc.getName(), weight);
+                    log.debug("Adding/updating connection from '{}' to '{}' (weight: {})", nodeDoc.getName(), targetDoc.getName(), weight);
                     targetDoc.getConnections().put(nodeDoc.getId(), weight);
                     toUpdate.put(targetId, targetDoc);
                 }
@@ -219,21 +212,17 @@ public class NodeService {
 
         if (connectionsChanged) {
             routeService.markAllStale();
-            rabbitTemplate.convertAndSend(exchange, "map.node.updated", new NodeChangedEvent("NODE_UPDATED", nodeName));
+            rabbitTemplate.convertAndSend(exchange, "map.node.updated", new NodeChangedEvent("NODE_UPDATED", nodeDoc.getName()));
         }
-        log.info("Node '{}' updated, {} document(s) affected", nodeName, toUpdate.size());
+        log.info("Node '{}' updated, {} document(s) affected", nodeDoc.getName(), toUpdate.size());
     }
 
-    public void deleteNode(String nodeName) {
-        log.info("Deleting node '{}'", nodeName);
-        List<NodeDocument> allDocs = cacheData.getNodes();
+    public void deleteNode(String nodeId) {
+        log.info("Deleting node with id '{}'", nodeId);
+        NodeDocument nodeDoc = cacheData.getIdToDoc().get(nodeId);
+        if (nodeDoc == null) throw new MapException("Node not found: " + nodeId);
 
-        NodeDocument nodeDoc = allDocs.stream()
-                .filter(d -> nodeName.equals(d.getName()))
-                .findFirst()
-                .orElseThrow(() -> new MapException("Node not found: " + nodeName));
-
-        List<NodeDocument> toUpdate = allDocs.stream()
+        List<NodeDocument> toUpdate = cacheData.getNodes().stream()
                 .filter(d -> !d.getId().equals(nodeDoc.getId()) && d.getConnections().containsKey(nodeDoc.getId()))
                 .peek(d -> d.getConnections().remove(nodeDoc.getId()))
                 .collect(Collectors.toList());
@@ -242,9 +231,9 @@ public class NodeService {
         nodeRepository.delete(nodeDoc);
         cacheData.refresh();
 
-        routeService.deleteByEndpoint(nodeName);
-        routeService.markStaleByPath(nodeName);
-        rabbitTemplate.convertAndSend(exchange, "map.node.deleted", new NodeChangedEvent("NODE_DELETED_INTERMEDIATE", nodeName));
-        log.info("Node '{}' deleted, {} neighbour(s) updated", nodeName, toUpdate.size());
+        routeService.deleteByEndpoint(nodeId);
+        routeService.markStaleByPath(nodeId);
+        rabbitTemplate.convertAndSend(exchange, "map.node.deleted", new NodeChangedEvent("NODE_DELETED_INTERMEDIATE", nodeDoc.getName()));
+        log.info("Node '{}' deleted, {} neighbour(s) updated", nodeDoc.getName(), toUpdate.size());
     }
 }

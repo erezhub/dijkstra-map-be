@@ -9,8 +9,9 @@ import java.util.Map;
 @Getter
 @AllArgsConstructor
 public class NodeResponse {
+    private String id;
     private String name;
     private Position position;
-    // key: target node name, value: edge weight
+    // key: target node ID, value: edge weight
     private Map<String, Integer> connections;
 }

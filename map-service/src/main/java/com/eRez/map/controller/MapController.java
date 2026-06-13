@@ -1,7 +1,7 @@
 package com.eRez.map.controller;
 
+import com.eRez.map.dto.request.AddNodeRequest;
 import com.eRez.map.dto.request.CreateMapRequest;
-import com.eRez.map.dto.request.NodeRequest;
 import com.eRez.map.dto.request.UpdateNodeRequest;
 import com.eRez.map.dto.response.MapResponse;
 import com.eRez.map.dto.response.PathResponse;
@@ -51,25 +51,25 @@ public class MapController {
     @PostMapping("/node")
     @ResponseStatus(HttpStatus.CREATED)
     public void addNode(@AuthenticationPrincipal UserDetails caller,
-                        @RequestBody @Valid NodeRequest request) {
+                        @RequestBody @Valid AddNodeRequest request) {
         denyRegular(caller);
         nodeService.addNode(request);
     }
 
-    @PutMapping("/node/{name}")
+    @PutMapping("/node/{id}")
     @ResponseStatus(HttpStatus.OK)
     public void updateNode(@AuthenticationPrincipal UserDetails caller,
-                           @PathVariable String name, @RequestBody UpdateNodeRequest request) {
+                           @PathVariable String id, @RequestBody UpdateNodeRequest request) {
         denyRegular(caller);
-        nodeService.updateNode(name, request);
+        nodeService.updateNode(id, request);
     }
 
-    @DeleteMapping("/node/{name}")
+    @DeleteMapping("/node/{id}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void deleteNode(@AuthenticationPrincipal UserDetails caller,
-                           @PathVariable String name) {
+                           @PathVariable String id) {
         denyRegular(caller);
-        nodeService.deleteNode(name);
+        nodeService.deleteNode(id);
     }
 
     @GetMapping("/path")

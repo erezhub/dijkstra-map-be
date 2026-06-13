@@ -1,5 +1,6 @@
 package com.eRez.map.services;
 
+import com.eRez.map.data.CacheData;
 import com.eRez.map.database.document.RouteDocument;
 import com.eRez.map.database.repository.RouteRepository;
 import com.eRez.map.dto.event.RouteRecalculatedEvent;
@@ -17,6 +18,8 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Slf4j
@@ -28,6 +31,7 @@ public class RouteService {
     private final PathService pathService;
     private final UserLookupService userLookupService;
     private final RabbitTemplate rabbitTemplate;
+    private final CacheData cacheData;
 
     @Value("${rabbitmq.exchange}")
     private String exchange;
@@ -35,17 +39,17 @@ public class RouteService {
     @Value("${rabbitmq.routing-key.route-recalculated}")
     private String routeRecalculatedKey;
 
-    public Optional<SavedRouteResponse> findCachedRoute(String from, String to) {
-        return routeRepository.findRoute(from, to)
+    public Optional<SavedRouteResponse> findCachedRoute(String fromId, String toId) {
+        return routeRepository.findRoute(fromId, toId)
                 .filter(r -> !r.isStale())
-                .map(r -> toResponse(r, !r.getNodeA().equals(from)));
+                .map(r -> toResponse(r, !r.getNodeA().equals(fromId)));
     }
 
-    public SavedRouteResponse saveRoute(String from, String to, UserDetails caller) {
-        PathResponse pathResponse = pathService.getPath(from, to);
-        RouteDocument route = routeRepository.findRoute(from, to).orElse(new RouteDocument());
-        route.setNodeA(from);
-        route.setNodeB(to);
+    public SavedRouteResponse saveRoute(String fromId, String toId, UserDetails caller) {
+        PathResponse pathResponse = pathService.getPath(fromId, toId);
+        RouteDocument route = routeRepository.findRoute(fromId, toId).orElse(new RouteDocument());
+        route.setNodeA(fromId);
+        route.setNodeB(toId);
         if (route.getCreatedBy() == null) {
             route.setCreatedBy(new ArrayList<>());
         }
@@ -54,20 +58,23 @@ public class RouteService {
         }
         populateFromPathResponse(route, pathResponse);
         routeRepository.save(route);
-        log.info("Route saved: {} → {} (distance: {}) by {}", from, to, pathResponse.getDistance(), caller.getUsername());
+        Map<String, String> idToName = cacheData.getIdToName();
+        log.info("Route saved: {} → {} (distance: {}) by {}",
+                idToName.getOrDefault(fromId, fromId), idToName.getOrDefault(toId, toId),
+                pathResponse.getDistance(), caller.getUsername());
         return toResponse(route, false);
     }
 
-    public SavedRouteResponse getRoute(String from, String to, UserDetails caller) {
-        RouteDocument route = findRouteForCaller(from, to, caller);
+    public SavedRouteResponse getRoute(String fromId, String toId, UserDetails caller) {
+        RouteDocument route = findRouteForCaller(fromId, toId, caller);
         if (route.isStale()) {
             route = recalculateRoute(route);
         }
-        return toResponse(route, !route.getNodeA().equals(from));
+        return toResponse(route, !route.getNodeA().equals(fromId));
     }
 
-    public void deleteRoute(String from, String to, UserDetails caller) {
-        RouteDocument route = findRouteForCaller(from, to, caller);
+    public void deleteRoute(String fromId, String toId, UserDetails caller) {
+        RouteDocument route = findRouteForCaller(fromId, toId, caller);
         if (isRegular(caller)) {
             route.getCreatedBy().remove(caller.getUsername());
             if (route.getCreatedBy().isEmpty()) {
@@ -78,7 +85,9 @@ public class RouteService {
         } else {
             routeRepository.delete(route);
         }
-        log.info("Route deleted: {} ↔ {} by {}", from, to, caller.getUsername());
+        Map<String, String> idToName = cacheData.getIdToName();
+        log.info("Route deleted: {} ↔ {} by {}",
+                idToName.getOrDefault(fromId, fromId), idToName.getOrDefault(toId, toId), caller.getUsername());
     }
 
     public List<SavedRouteResponse> getAllRoutes(UserDetails caller) {
@@ -98,17 +107,17 @@ public class RouteService {
         log.info("Marked {} route(s) as stale", routes.size());
     }
 
-    public void deleteByEndpoint(String nodeName) {
-        routeRepository.deleteByNodeAOrNodeB(nodeName, nodeName);
-        log.info("Deleted routes with endpoint '{}'", nodeName);
+    public void deleteByEndpoint(String nodeId) {
+        routeRepository.deleteByNodeAOrNodeB(nodeId, nodeId);
+        log.info("Deleted routes with endpoint id '{}'", nodeId);
     }
 
-    public void markStaleByPath(String nodeName) {
-        List<RouteDocument> affected = routeRepository.findByPathContaining(nodeName);
+    public void markStaleByPath(String nodeId) {
+        List<RouteDocument> affected = routeRepository.findByPathContaining(nodeId);
         if (affected.isEmpty()) return;
         affected.forEach(r -> r.setStale(true));
         routeRepository.saveAll(affected);
-        log.info("Marked {} route(s) as stale (containing '{}')", affected.size(), nodeName);
+        log.info("Marked {} route(s) as stale (containing id '{}')", affected.size(), nodeId);
     }
 
     public void deleteAll() {
@@ -120,39 +129,46 @@ public class RouteService {
         List<RouteDocument> staleRoutes = routeRepository.findByStaleTrue();
         if (staleRoutes.isEmpty()) return;
         log.info("Recalculating {} stale route(s)", staleRoutes.size());
+        Map<String, String> idToName = cacheData.getIdToName();
         for (RouteDocument route : staleRoutes) {
             try {
                 recalculateRoute(route);
             } catch (MapException e) {
                 routeRepository.delete(route);
-                log.info("Route {} ↔ {} deleted ({})", route.getNodeA(), route.getNodeB(), e.getMessage());
+                log.info("Route {} ↔ {} deleted ({})",
+                        idToName.getOrDefault(route.getNodeA(), route.getNodeA()),
+                        idToName.getOrDefault(route.getNodeB(), route.getNodeB()),
+                        e.getMessage());
             }
         }
     }
 
-    private RouteDocument findRouteForCaller(String from, String to, UserDetails caller) {
-        String notFoundMsg = "No saved route from '" + from + "' to '" + to + "'";
+    private RouteDocument findRouteForCaller(String fromId, String toId, UserDetails caller) {
+        String notFoundMsg = "No saved route from '" + fromId + "' to '" + toId + "'";
         if (isRegular(caller)) {
-            return routeRepository.findRouteByCreator(from, to, caller.getUsername())
+            return routeRepository.findRouteByCreator(fromId, toId, caller.getUsername())
                     .orElseThrow(() -> new MapException(notFoundMsg));
         }
-        return routeRepository.findRoute(from, to)
+        return routeRepository.findRoute(fromId, toId)
                 .orElseThrow(() -> new MapException(notFoundMsg));
     }
 
     private boolean isRegular(UserDetails caller) {
         return caller.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("ROLE_REGULAR"));
+                .anyMatch(a -> Objects.equals(a.getAuthority(), "ROLE_REGULAR"));
     }
 
     private RouteDocument recalculateRoute(RouteDocument route) {
         int oldDistance = route.getDistance();
         List<String> oldPath = route.getPath() != null ? List.copyOf(route.getPath()) : List.of();
 
+        Map<String, String> idToName = cacheData.getIdToName();
+        String nodeAName = idToName.getOrDefault(route.getNodeA(), route.getNodeA());
+        String nodeBName = idToName.getOrDefault(route.getNodeB(), route.getNodeB());
         PathResponse pathResponse = pathService.getPath(route.getNodeA(), route.getNodeB());
         populateFromPathResponse(route, pathResponse);
         routeRepository.save(route);
-        log.info("Route recalculated: {} → {} (distance: {})", route.getNodeA(), route.getNodeB(), pathResponse.getDistance());
+        log.info("Route recalculated: {} → {} (distance: {})", nodeAName, nodeBName, pathResponse.getDistance());
 
         List<String> newPath = route.getPath() != null ? route.getPath() : List.of();
         boolean changed = route.getDistance() != oldDistance || !newPath.equals(oldPath);
@@ -160,10 +176,9 @@ public class RouteService {
             List<String> recipients = userLookupService.resolveRecipients(route.getCreatedBy());
             if (!recipients.isEmpty()) {
                 rabbitTemplate.convertAndSend(exchange, routeRecalculatedKey,
-                        new RouteRecalculatedEvent(route.getNodeA(), route.getNodeB(),
-                                route.getDistance(), recipients));
+                        new RouteRecalculatedEvent(nodeAName, nodeBName, route.getDistance(), recipients));
                 log.info("Route update notification published for {} ↔ {} to {} recipient(s)",
-                        route.getNodeA(), route.getNodeB(), recipients.size());
+                        nodeAName, nodeBName, recipients.size());
             }
         }
         return route;
@@ -173,9 +188,9 @@ public class RouteService {
         List<String> path = new ArrayList<>();
         List<Integer> segmentDistances = new ArrayList<>();
         if (!pathResponse.getPath().isEmpty()) {
-            path.add(pathResponse.getPath().get(0).getFrom());
+            path.add(pathResponse.getPath().get(0).getFromId());
             for (PathSegment seg : pathResponse.getPath()) {
-                path.add(seg.getTo());
+                path.add(seg.getToId());
                 segmentDistances.add(seg.getDistance());
             }
         }
@@ -186,20 +201,22 @@ public class RouteService {
     }
 
     private SavedRouteResponse toResponse(RouteDocument route, boolean reversed) {
-        List<String> path = route.getPath();
-        List<Integer> dists = route.getSegmentDistances();
+        List<String> pathIds = new ArrayList<>(route.getPath());
+        List<Integer> dists = new ArrayList<>(route.getSegmentDistances());
         if (reversed) {
-            path = new ArrayList<>(path);
-            Collections.reverse(path);
-            dists = new ArrayList<>(dists);
+            Collections.reverse(pathIds);
             Collections.reverse(dists);
         }
         List<PathSegment> segments = new ArrayList<>();
-        for (int i = 0; i < path.size() - 1; i++) {
-            segments.add(new PathSegment(path.get(i), path.get(i + 1), dists.get(i)));
+        Map<String, String> idToName = cacheData.getIdToName();
+        for (int i = 0; i < pathIds.size() - 1; i++) {
+            String fId = pathIds.get(i);
+            String tId = pathIds.get(i + 1);
+            segments.add(new PathSegment(fId, idToName.getOrDefault(fId, fId), tId, idToName.getOrDefault(tId, tId), dists.get(i)));
         }
-        String nodeA = reversed ? route.getNodeB() : route.getNodeA();
-        String nodeB = reversed ? route.getNodeA() : route.getNodeB();
-        return new SavedRouteResponse(nodeA, nodeB, route.getDistance(), segments, route.getCreatedBy());
+        String aId = reversed ? route.getNodeB() : route.getNodeA();
+        String bId = reversed ? route.getNodeA() : route.getNodeB();
+        return new SavedRouteResponse(aId, idToName.getOrDefault(aId, aId), bId, idToName.getOrDefault(bId, bId),
+                route.getDistance(), segments, route.getCreatedBy());
     }
 }

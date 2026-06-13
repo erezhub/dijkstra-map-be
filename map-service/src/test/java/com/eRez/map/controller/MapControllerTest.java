@@ -86,13 +86,14 @@ class MapControllerTest {
     @Test
     void getMap_returns200WithNodes() throws Exception {
         when(nodeService.getMap()).thenReturn(new MapResponse(List.of(
-                new NodeResponse("Amsterdam", position(1.0, 2.0), Map.of("Berlin", 7)),
-                new NodeResponse("Berlin",    null,               Map.of("Amsterdam", 7))
+                new NodeResponse("id-amsterdam", "Amsterdam", position(1.0, 2.0), Map.of("id-berlin", 7)),
+                new NodeResponse("id-berlin",    "Berlin",    null,               Map.of("id-amsterdam", 7))
         )));
 
         mockMvc.perform(get("/map"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.nodes.length()").value(2))
+                .andExpect(jsonPath("$.nodes[0].id").value("id-amsterdam"))
                 .andExpect(jsonPath("$.nodes[0].name").value("Amsterdam"))
                 .andExpect(jsonPath("$.nodes[0].position.x").value(1.0))
                 .andExpect(jsonPath("$.nodes[0].position.y").value(2.0))
@@ -178,8 +179,9 @@ class MapControllerTest {
 
     @Test
     void addNode_validRequest_returns201() throws Exception {
+        // connections keys are now node IDs
         String body = """
-                {"name": "Prague", "position": {"x": 5.0, "y": 6.0}, "connections": {"Berlin": 5}}
+                {"name": "Prague", "position": {"x": 5.0, "y": 6.0}, "connections": {"id-berlin": 5}}
                 """;
 
         mockMvc.perform(post("/map/node").contentType(APPLICATION_JSON).content(body))
@@ -209,15 +211,15 @@ class MapControllerTest {
                 .andExpect(jsonPath("$.message").isString());
     }
 
-    // ── PUT /map/node/{name} ──────────────────────────────────────────────────
+    // ── PUT /map/node/{id} ────────────────────────────────────────────────────
 
     @Test
     void updateNode_validRequest_returns200() throws Exception {
         String body = """
-                {"position": {"x": 7.0, "y": 8.0}, "connections": {"Berlin": 5}}
+                {"position": {"x": 7.0, "y": 8.0}, "connections": {"id-berlin": 5}}
                 """;
 
-        mockMvc.perform(put("/map/node/Amsterdam").contentType(APPLICATION_JSON).content(body))
+        mockMvc.perform(put("/map/node/id-amsterdam").contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
     }
 
@@ -228,30 +230,30 @@ class MapControllerTest {
                 {"connections": {}}
                 """;
 
-        mockMvc.perform(put("/map/node/Amsterdam").contentType(APPLICATION_JSON).content(body))
+        mockMvc.perform(put("/map/node/id-amsterdam").contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("Access denied"));
     }
 
     @Test
     void updateNode_serviceThrowsMapException_returns409() throws Exception {
-        doThrow(new MapException("Node not found: Unknown"))
-                .when(nodeService).updateNode(eq("Unknown"), any());
+        doThrow(new MapException("Node not found: id-unknown"))
+                .when(nodeService).updateNode(eq("id-unknown"), any());
 
         String body = """
                 {"connections": {}}
                 """;
 
-        mockMvc.perform(put("/map/node/Unknown").contentType(APPLICATION_JSON).content(body))
+        mockMvc.perform(put("/map/node/id-unknown").contentType(APPLICATION_JSON).content(body))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Node not found: Unknown"));
+                .andExpect(jsonPath("$.message").value("Node not found: id-unknown"));
     }
 
-    // ── DELETE /map/node/{name} ───────────────────────────────────────────────
+    // ── DELETE /map/node/{id} ─────────────────────────────────────────────────
 
     @Test
     void deleteNode_returns204() throws Exception {
-        mockMvc.perform(delete("/map/node/Amsterdam"))
+        mockMvc.perform(delete("/map/node/id-amsterdam"))
                 .andExpect(status().isNoContent());
     }
 
@@ -259,50 +261,51 @@ class MapControllerTest {
     void deleteNode_regularUser_returns409() throws Exception {
         setAuth("user@x.com", "REGULAR");
 
-        mockMvc.perform(delete("/map/node/Amsterdam"))
+        mockMvc.perform(delete("/map/node/id-amsterdam"))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("Access denied"));
     }
 
     @Test
     void deleteNode_serviceThrowsMapException_returns409() throws Exception {
-        doThrow(new MapException("Node not found: Ghost"))
-                .when(nodeService).deleteNode("Ghost");
+        doThrow(new MapException("Node not found: id-ghost"))
+                .when(nodeService).deleteNode("id-ghost");
 
-        mockMvc.perform(delete("/map/node/Ghost"))
+        mockMvc.perform(delete("/map/node/id-ghost"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Node not found: Ghost"));
+                .andExpect(jsonPath("$.message").value("Node not found: id-ghost"));
     }
 
     // ── GET /map/path ─────────────────────────────────────────────────────────
 
     @Test
     void getPath_noSavedRoute_runsDijkstra() throws Exception {
-        when(routeService.findCachedRoute("Amsterdam", "Prague")).thenReturn(Optional.empty());
-        when(pathService.getPath("Amsterdam", "Prague")).thenReturn(new PathResponse(12, List.of(
-                new PathSegment("Amsterdam", "Berlin", 7),
-                new PathSegment("Berlin",    "Prague", 5)
+        when(routeService.findCachedRoute("id-amsterdam", "id-prague")).thenReturn(Optional.empty());
+        when(pathService.getPath("id-amsterdam", "id-prague")).thenReturn(new PathResponse(12, List.of(
+                new PathSegment("id-amsterdam", "Amsterdam", "id-berlin", "Berlin", 7),
+                new PathSegment("id-berlin",    "Berlin",    "id-prague", "Prague", 5)
         )));
 
-        mockMvc.perform(get("/map/path").param("from", "Amsterdam").param("to", "Prague"))
+        mockMvc.perform(get("/map/path").param("from", "id-amsterdam").param("to", "id-prague"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.distance").value(12))
                 .andExpect(jsonPath("$.path.length()").value(2))
                 .andExpect(jsonPath("$.path[0].from").value("Amsterdam"))
                 .andExpect(jsonPath("$.path[1].to").value("Prague"));
 
-        verify(pathService).getPath("Amsterdam", "Prague");
+        verify(pathService).getPath("id-amsterdam", "id-prague");
     }
 
     @Test
     void getPath_cachedRouteExists_returnsCachedWithoutDijkstra() throws Exception {
-        SavedRouteResponse cached = new SavedRouteResponse("Amsterdam", "Prague", 12, List.of(
-                new PathSegment("Amsterdam", "Berlin", 7),
-                new PathSegment("Berlin",    "Prague", 5)
+        SavedRouteResponse cached = new SavedRouteResponse(
+                "id-amsterdam", "Amsterdam", "id-prague", "Prague", 12, List.of(
+                new PathSegment("id-amsterdam", "Amsterdam", "id-berlin", "Berlin", 7),
+                new PathSegment("id-berlin",    "Berlin",    "id-prague", "Prague", 5)
         ), List.of("admin"));
-        when(routeService.findCachedRoute("Amsterdam", "Prague")).thenReturn(Optional.of(cached));
+        when(routeService.findCachedRoute("id-amsterdam", "id-prague")).thenReturn(Optional.of(cached));
 
-        mockMvc.perform(get("/map/path").param("from", "Amsterdam").param("to", "Prague"))
+        mockMvc.perform(get("/map/path").param("from", "id-amsterdam").param("to", "id-prague"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.distance").value(12))
                 .andExpect(jsonPath("$.path.length()").value(2));
@@ -312,12 +315,12 @@ class MapControllerTest {
 
     @Test
     void getPath_serviceThrowsMapException_returns409() throws Exception {
-        when(routeService.findCachedRoute("Atlantis", "Amsterdam")).thenReturn(Optional.empty());
-        doThrow(new MapException("Node not found: Atlantis"))
-                .when(pathService).getPath("Atlantis", "Amsterdam");
+        when(routeService.findCachedRoute("id-atlantis", "id-amsterdam")).thenReturn(Optional.empty());
+        doThrow(new MapException("Node not found: id-atlantis"))
+                .when(pathService).getPath("id-atlantis", "id-amsterdam");
 
-        mockMvc.perform(get("/map/path").param("from", "Atlantis").param("to", "Amsterdam"))
+        mockMvc.perform(get("/map/path").param("from", "id-atlantis").param("to", "id-amsterdam"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.message").value("Node not found: Atlantis"));
+                .andExpect(jsonPath("$.message").value("Node not found: id-atlantis"));
     }
 }

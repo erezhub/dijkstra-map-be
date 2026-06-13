@@ -17,6 +17,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -48,6 +49,8 @@ class PathServiceTest {
         paris     = doc(ID_C, "Paris",     new HashMap<>(Map.of(ID_A, 3)));
         prague    = doc(ID_D, "Prague",    new HashMap<>(Map.of(ID_B, 5)));
         isolated  = doc(ID_X, "Isolated",  new HashMap<>());
+        lenient().when(cacheData.getIdToName()).thenReturn(Map.of(
+                ID_A, "Amsterdam", ID_B, "Berlin", ID_C, "Paris", ID_D, "Prague", ID_X, "Isolated"));
     }
 
     private NodeDocument doc(String id, String name, Map<String, Integer> connections) {
@@ -62,11 +65,13 @@ class PathServiceTest {
     void getPath_directConnection_returnsCorrectDistanceAndSegment() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam, berlin, paris, prague));
 
-        PathResponse response = pathService.getPath("Amsterdam", "Paris");
+        PathResponse response = pathService.getPath(ID_A, ID_C);
 
         assertThat(response.getDistance()).isEqualTo(3);
         assertThat(response.getPath()).hasSize(1);
+        assertThat(response.getPath().get(0).getFromId()).isEqualTo(ID_A);
         assertThat(response.getPath().get(0).getFrom()).isEqualTo("Amsterdam");
+        assertThat(response.getPath().get(0).getToId()).isEqualTo(ID_C);
         assertThat(response.getPath().get(0).getTo()).isEqualTo("Paris");
         assertThat(response.getPath().get(0).getDistance()).isEqualTo(3);
     }
@@ -75,7 +80,7 @@ class PathServiceTest {
     void getPath_multiHop_returnsShortestPath() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam, berlin, paris, prague));
 
-        PathResponse response = pathService.getPath("Amsterdam", "Prague");
+        PathResponse response = pathService.getPath(ID_A, ID_D);
 
         assertThat(response.getDistance()).isEqualTo(12);
         assertThat(response.getPath()).hasSize(2);
@@ -89,7 +94,7 @@ class PathServiceTest {
     void getPath_sameNode_returnsZeroDistanceWithEmptyPath() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam, berlin));
 
-        PathResponse response = pathService.getPath("Amsterdam", "Amsterdam");
+        PathResponse response = pathService.getPath(ID_A, ID_A);
 
         assertThat(response.getDistance()).isEqualTo(0);
         assertThat(response.getPath()).isEmpty();
@@ -99,25 +104,25 @@ class PathServiceTest {
     void getPath_fromNodeNotFound_throwsMapException() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam));
 
-        assertThatThrownBy(() -> pathService.getPath("Atlantis", "Amsterdam"))
+        assertThatThrownBy(() -> pathService.getPath("id-atlantis", ID_A))
                 .isInstanceOf(MapException.class)
-                .hasMessageContaining("Node not found: Atlantis");
+                .hasMessageContaining("Node not found: id-atlantis");
     }
 
     @Test
     void getPath_toNodeNotFound_throwsMapException() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam));
 
-        assertThatThrownBy(() -> pathService.getPath("Amsterdam", "Atlantis"))
+        assertThatThrownBy(() -> pathService.getPath(ID_A, "id-atlantis"))
                 .isInstanceOf(MapException.class)
-                .hasMessageContaining("Node not found: Atlantis");
+                .hasMessageContaining("Node not found: id-atlantis");
     }
 
     @Test
     void getPath_noPathExists_throwsMapException() {
         when(cacheData.getNodes()).thenReturn(List.of(amsterdam, isolated));
 
-        assertThatThrownBy(() -> pathService.getPath("Amsterdam", "Isolated"))
+        assertThatThrownBy(() -> pathService.getPath(ID_A, ID_X))
                 .isInstanceOf(MapException.class)
                 .hasMessageContaining("No path exists");
     }
