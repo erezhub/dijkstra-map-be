@@ -282,24 +282,27 @@ Returns the full node graph.
 {
   "nodes": [
     {
+      "id": "uuid-a",
       "name": "A",
       "position": { "x": 0.0, "y": 0.0 },
-      "connections": { "B": 5, "C": 10 }
+      "connections": { "uuid-b": 5, "uuid-c": 10 }
     },
     {
+      "id": "uuid-b",
       "name": "B",
       "position": { "x": 3.0, "y": 0.0 },
-      "connections": { "A": 5 }
+      "connections": { "uuid-a": 5 }
     },
     {
+      "id": "uuid-c",
       "name": "C",
       "position": { "x": 0.0, "y": 4.0 },
-      "connections": { "A": 10 }
+      "connections": { "uuid-a": 10 }
     }
   ]
 }
 ```
-> `connections` keys are node names; values are edge weights.
+> `connections` keys are **node IDs**; values are edge weights. Use these IDs for all subsequent mutation and path requests.
 
 ---
 
@@ -343,73 +346,80 @@ Adds a single node and wires reverse connections on any referenced neighbours.
 {
   "name": "D",
   "position": { "x": 1.0, "y": 1.0 },
-  "connections": { "A": 3, "B": 7 }
+  "connections": { "uuid-a": 3, "uuid-b": 7 }
 }
 ```
+> `connections` keys are **node IDs** (obtained from `GET /map`).
 
 **Response 201** No content.
 
 ---
 
-### PUT /map/node/{name}
+### PUT /map/node/{id}
 
-Updates a node's connections and/or position. Both fields are optional — omit what you don't want to change.
+Updates a node's connections, position, and/or name. All fields are optional — omit what you don't want to change. Renaming does not cascade to routes (routes store IDs internally).
 
 **Request**
 ```json
 {
+  "newName": "A-renamed",
   "position": { "x": 2.0, "y": 2.0 },
-  "connections": { "C": 4 }
+  "connections": { "uuid-c": 4 }
 }
 ```
+> `{id}` is the node's ID from `GET /map`. `connections` keys are **node IDs**.
 
 **Response 200** No content.
 
 ---
 
-### DELETE /map/node/{name}
+### DELETE /map/node/{id}
 
 Deletes the node and removes it from all neighbours' connection lists.
+
+> `{id}` is the node's ID from `GET /map`.
 
 **Response 204** No content.
 
 ---
 
-### GET /map/path?from={name}&to={name}
+### GET /map/path?from={id}&to={id}
 
 Runs Dijkstra's algorithm between two nodes.
 
-**Query params** `from` and `to` — node names
+**Query params** `from` and `to` — **node IDs**
 
 **Response 200**
 ```json
 {
   "distance": 15,
   "path": [
-    { "from": "A", "to": "C", "distance": 10 },
-    { "from": "C", "to": "B", "distance": 5 }
+    { "fromId": "uuid-a", "from": "A", "toId": "uuid-c", "to": "C", "distance": 10 },
+    { "fromId": "uuid-c", "from": "C", "toId": "uuid-b", "to": "B", "distance": 5 }
   ]
 }
 ```
-> `distance` is the total cost of the shortest path. `path` is the ordered list of hops.
+> `distance` is the total cost of the shortest path. Each segment includes both IDs and display names.
 
 ---
 
-### POST /map/route?from={name}&to={name}
+### POST /map/route?from={id}&to={id}
 
 Saves the shortest path between two nodes. If the route already exists, the caller is added to its `createdBy` list (co-ownership). REGULAR users can only access routes they own.
 
-**Query params** `from` and `to` — node names
+**Query params** `from` and `to` — **node IDs**
 
 **Response 201**
 ```json
 {
+  "nodeAId": "uuid-a",
   "nodeA": "A",
+  "nodeBId": "uuid-c",
   "nodeB": "C",
   "distance": 15,
   "path": [
-    { "from": "A", "to": "B", "distance": 10 },
-    { "from": "B", "to": "C", "distance": 5 }
+    { "fromId": "uuid-a", "from": "A", "toId": "uuid-b", "to": "B", "distance": 10 },
+    { "fromId": "uuid-b", "from": "B", "toId": "uuid-c", "to": "C", "distance": 5 }
   ],
   "createdBy": ["alice@example.com"]
 }
@@ -417,21 +427,21 @@ Saves the shortest path between two nodes. If the route already exists, the call
 
 ---
 
-### GET /map/route?from={name}&to={name}
+### GET /map/route?from={id}&to={id}
 
 Returns a saved route. If the route is marked stale (a node was mutated since it was saved), it is recalculated on-the-fly before being returned. REGULAR users can only retrieve routes they own.
 
-**Query params** `from` and `to` — node names
+**Query params** `from` and `to` — **node IDs**
 
 **Response 200** — same shape as `POST /map/route`
 
 ---
 
-### DELETE /map/route?from={name}&to={name}
+### DELETE /map/route?from={id}&to={id}
 
 Deletes a saved route. ADMIN/MANAGER always delete the full document. REGULAR users remove themselves from `createdBy`; the document is deleted only when the list becomes empty.
 
-**Query params** `from` and `to` — node names
+**Query params** `from` and `to` — **node IDs**
 
 **Response 204** No content.
 
@@ -445,12 +455,14 @@ Lists saved routes. REGULAR users see only routes they own; ADMIN/MANAGER see al
 ```json
 [
   {
+    "nodeAId": "uuid-a",
     "nodeA": "A",
+    "nodeBId": "uuid-c",
     "nodeB": "C",
     "distance": 15,
     "path": [
-      { "from": "A", "to": "B", "distance": 10 },
-      { "from": "B", "to": "C", "distance": 5 }
+      { "fromId": "uuid-a", "from": "A", "toId": "uuid-b", "to": "B", "distance": 10 },
+      { "fromId": "uuid-b", "from": "B", "toId": "uuid-c", "to": "C", "distance": 5 }
     ],
     "createdBy": ["alice@example.com", "bob@example.com"]
   }
