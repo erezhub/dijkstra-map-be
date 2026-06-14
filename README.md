@@ -143,7 +143,8 @@ Returns users one level below the caller.
     "id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
     "username": "Alice",
     "email": "alice@example.com",
-    "role": "MANAGER"
+    "role": "MANAGER",
+    "passwordChangeRequired": false
   }
 ]
 ```
@@ -152,7 +153,7 @@ Returns users one level below the caller.
 
 ### POST /users
 
-Creates a user one level below the caller.
+Creates a user one level below the caller. No password is set by the creator — a temporary password is generated and emailed to the new user.
 
 **Headers** `Authorization: Bearer <token>`  
 **Roles** ADMIN → creates MANAGER; MANAGER → creates REGULAR
@@ -161,8 +162,7 @@ Creates a user one level below the caller.
 ```json
 {
   "username": "Alice",
-  "email": "alice@example.com",
-  "password": "secret"
+  "email": "alice@example.com"
 }
 ```
 
@@ -172,7 +172,8 @@ Creates a user one level below the caller.
   "id": "d290f1ee-6c54-4b01-90e6-d701748f0851",
   "username": "Alice",
   "email": "alice@example.com",
-  "role": "MANAGER"
+  "role": "MANAGER",
+  "passwordChangeRequired": true
 }
 ```
 
@@ -189,7 +190,7 @@ Creates a user one level below the caller.
 
 ### PUT /users/{id}
 
-All fields are optional. Password can only be changed when updating yourself.
+All fields are optional. Password can only be changed when updating yourself. Throws if the target user has not yet set a permanent password (`passwordChangeRequired: true`).
 
 **Headers** `Authorization: Bearer <token>`  
 **Roles** ADMIN or MANAGER
@@ -198,8 +199,7 @@ All fields are optional. Password can only be changed when updating yourself.
 ```json
 {
   "username": "Alice Updated",
-  "email": "alice-new@example.com",
-  "password": "newpassword"
+  "email": "alice-new@example.com"
 }
 ```
 
@@ -216,23 +216,41 @@ All fields are optional. Password can only be changed when updating yourself.
 
 ---
 
+### POST /users/{id}/resend-temp-password
+
+Generates a new temporary password and emails it to the user. Use this when a user was locked out after consuming their single-use temp password without setting a permanent one. Throws if the user already has a permanent password.
+
+**Headers** `Authorization: Bearer <token>`  
+**Roles** ADMIN or MANAGER
+
+**Response 204** No content.
+
+---
+
 ### GET /users/me
 
 Returns the caller's own profile. Available to all roles.
 
 **Headers** `Authorization: Bearer <token>`
 
-**Response 200** — same shape as the object in `GET /users`
+**Response 200** — same shape as the object in `GET /users` (includes `passwordChangeRequired`)
 
 ---
 
 ### PUT /users/me
 
-Updates the caller's own profile. All fields are optional. Available to all roles.
+Updates the caller's own profile. All fields are optional. Available to all roles. Setting a `password` clears `passwordChangeRequired`.
 
 **Headers** `Authorization: Bearer <token>`
 
-**Request** — same shape as `PUT /users/{id}`
+**Request**
+```json
+{
+  "username": "Alice Updated",
+  "email": "alice-new@example.com",
+  "password": "newpassword"
+}
+```
 
 **Response 200** — updated user object
 
@@ -244,7 +262,9 @@ notification-service handles two types of email:
 
 ### Welcome email
 
-When a user is created via `POST /users`, user-service publishes a `user.created` event. notification-service consumes it and sends a welcome email to the new user's address.
+When a user is created via `POST /users`, user-service publishes a `user.created` event containing a plaintext temporary password. notification-service consumes it and sends a welcome email to the new user's address with the temporary password and instructions. The same email is sent when an admin/manager calls `POST /users/{id}/resend-temp-password`.
+
+**Temporary password behaviour:** the temp password is single-use and expires after 10 minutes (configurable via `temp.password.expiration-ms`). It is consumed on first successful login — do not log out before setting a permanent password, or you will need the admin to resend it. After logging in with a temp password, the user is locked to the profile page until they set a permanent password.
 
 ### Route recalculation email
 
