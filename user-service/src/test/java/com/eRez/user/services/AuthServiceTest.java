@@ -66,7 +66,7 @@ class AuthServiceTest {
     }
 
     @Test
-    void login_withUsername_fallsBackToUsernameSearch() {
+    void login_adminWithUsername_succeeds() {
         UserDocument admin = user("a1", null, "admin", "hashed", UserRole.ADMIN);
         when(userRepository.findByEmail("admin")).thenReturn(Optional.empty());
         when(userRepository.findByUsername("admin")).thenReturn(Optional.of(admin));
@@ -79,9 +79,17 @@ class AuthServiceTest {
     }
 
     @Test
-    void login_unknownIdentifier_throws() {
+    void login_nonAdminUsername_throws() {
+        when(userRepository.findByEmail("Manager")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> authService.login(loginRequest("Manager", "pass")))
+                .isInstanceOf(UserException.class)
+                .hasMessageContaining("Invalid credentials");
+    }
+
+    @Test
+    void login_unknownEmail_throws() {
         when(userRepository.findByEmail("nobody@x.com")).thenReturn(Optional.empty());
-        when(userRepository.findByUsername("nobody@x.com")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> authService.login(loginRequest("nobody@x.com", "pass")))
                 .isInstanceOf(UserException.class)
