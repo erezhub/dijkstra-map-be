@@ -164,8 +164,9 @@ Shared infrastructure used by both services.
 - **Role hierarchy**: ADMIN manages MANAGERs, MANAGER manages REGULARs, REGULAR can only access `/users/me`. `assertCanManage` also allows self-access at any role.
 - **Password rule**: password can only be changed when updating oneself; any other update request with a non-null `password` throws `UserException`.
 - **Sparse unique index** on `email` allows multiple `null` values (only admin has `null`).
-- **RabbitMQ**: after `userRepository.save()` in `createUser()`, publishes a `UserCreatedEvent` (`{ id, username, email, role }`) to the `dijkstra.events` topic exchange with routing key `user.created`. `RabbitConfig` declares the exchange and registers `JacksonJsonMessageConverter`.
-- Property keys: `mongodb.uri`, `mongodb.database`; `rabbitmq.exchange`, `rabbitmq.routing-key.user-created`.
+- **Temporary password on creation**: `CreateUserRequest` has no `password` field. `createUser()` generates a random 12-char alphanumeric temp password, BCrypt-hashes it, sets `passwordChangeRequired = true` and `tempPasswordExpiresAt = now + TTL` on `UserDocument`, then publishes `UserCreatedEvent` with the plaintext temp password so notification-service can email it. TTL is configurable via `temp.password.expiration-ms` (default 600000 ms = 10 min). The temp password is **single-use**: `AuthService.login()` checks the expiry and — on success — immediately sets `tempPasswordExpiresAt` to the past so it cannot be reused. If the user logs out before setting a permanent password they are locked out; an admin/manager can issue a new temp password via `POST /users/{id}/resend-temp-password`. Setting a permanent password (via `PUT /users/me` with a `password` field) clears `passwordChangeRequired` and `tempPasswordExpiresAt`. While `passwordChangeRequired == true`, `updateUser()` by another user throws ("User must set a permanent password before they can be modified").
+- **RabbitMQ**: after `userRepository.save()` in `createUser()`, publishes a `UserCreatedEvent` (`{ id, username, email, role, tempPassword }`) to the `dijkstra.events` topic exchange with routing key `user.created`. `RabbitConfig` declares the exchange and registers `JacksonJsonMessageConverter`.
+- Property keys: `mongodb.uri`, `mongodb.database`; `rabbitmq.exchange`, `rabbitmq.routing-key.user-created`; `temp.password.expiration-ms`.
 
 ### notification-service
 
@@ -174,7 +175,7 @@ Shared infrastructure used by both services.
 | `config` | `RabbitConfig` — declares `TopicExchange`; queues + bindings for `notification.user.created` and `notification.route.recalculated`; registers `JacksonJsonMessageConverter` and `SimpleRabbitListenerContainerFactory` |
 | `consumer` | `UserCreatedConsumer` — `@RabbitListener` on `${rabbitmq.queue.user-created}`; calls `EmailService.sendWelcomeEmail()`; `RouteRecalculatedConsumer` — `@RabbitListener` on `${rabbitmq.queue.route-recalculated}`; calls `EmailService.sendRouteUpdateEmail()` |
 | `service` | `EmailService` — private `sendEmail(to, subject, body)` helper; `sendWelcomeEmail()` and `sendRouteUpdateEmail()` build their strings and delegate to it |
-| `dto` | `UserCreatedEvent` — `{ id, username, email, role }`; `RouteRecalculatedEvent` — `{ nodeA, nodeB, distance, recipients }` — plain POJOs matching what the publishing services send |
+| `dto` | `UserCreatedEvent` — `{ id, username, email, role, tempPassword }`; `RouteRecalculatedEvent` — `{ nodeA, nodeB, distance, recipients }` — plain POJOs matching what the publishing services send |
 
 **Key decisions:**
 - No dependency on `common` — avoids pulling in MongoDB, Spring Security, and token validation.
@@ -185,6 +186,7 @@ Shared infrastructure used by both services.
 - MailHog (`localhost:1025`) is the default SMTP target for local and Docker dev. In Docker, `SPRING_MAIL_HOST: mailhog` overrides the host to the container name.
 - `.env.example` documents the `MAIL_USERNAME` / `MAIL_PASSWORD` env vars needed for real SMTP; `.env` is gitignored.
 - `sendRouteUpdateEmail` sends one email per recipient (no BCC) to avoid recipient address leakage.
+- `sendWelcomeEmail` includes the plaintext temp password and instructions in the email body. The same event/routing key is reused when an admin resends a temp password (`POST /users/{id}/resend-temp-password`).
 - Property keys: `rabbitmq.exchange`, `rabbitmq.queue.user-created`, `rabbitmq.routing-key.user-created`, `rabbitmq.queue.route-recalculated`, `rabbitmq.routing-key.route-recalculated`; `notification.mail.from`, `notification.mail.from-name`.
 
 ### Data models
@@ -201,6 +203,7 @@ RouteDocument { id: String, nodeA: String (node ID), nodeB: String (node ID),
                 createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
 
 UserDocument  { id: String (UUID), username: String, email: String (sparse unique), password: String (BCrypt), role: UserRole,
+                passwordChangeRequired: boolean (default false), tempPasswordExpiresAt: LocalDateTime (UTC, null when permanent),
                 createdAt: LocalDateTime (UTC), updatedAt: LocalDateTime (UTC) }
 TokenDocument { id: String, token: String (unique UUID), userId: String, valid: boolean, expiresAt: Date (TTL),
                 createdAt: LocalDateTime (UTC) }
@@ -236,12 +239,13 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `POST` | `/auth/login` | none | Returns `{ "token": "..." }` |
 | `POST` | `/auth/logout` | Bearer | Invalidates token (`valid = false`) |
 | `GET` | `/users` | Bearer | ADMIN → list MANAGERs; MANAGER → list REGULARs |
-| `POST` | `/users` | Bearer | ADMIN → create MANAGER; MANAGER → create REGULAR |
+| `POST` | `/users` | Bearer | ADMIN → create MANAGER; MANAGER → create REGULAR; no password in request — temp password generated and emailed |
 | `GET` | `/users/{id}` | Bearer | ADMIN or MANAGER (own level down) |
-| `PUT` | `/users/{id}` | Bearer | ADMIN or MANAGER; password change only allowed on self |
+| `PUT` | `/users/{id}` | Bearer | ADMIN or MANAGER; password change only allowed on self; throws if target has `passwordChangeRequired` |
 | `DELETE` | `/users/{id}` | Bearer | ADMIN or MANAGER |
-| `GET` | `/users/me` | Bearer | Any role — returns caller's own data |
-| `PUT` | `/users/me` | Bearer | Any role — updates caller's own data |
+| `POST` | `/users/{id}/resend-temp-password` | Bearer | ADMIN or MANAGER; generates new temp password and emails it; throws if user already has a permanent password |
+| `GET` | `/users/me` | Bearer | Any role — returns caller's own data (includes `passwordChangeRequired`) |
+| `PUT` | `/users/me` | Bearer | Any role — updates caller's own data; setting a password clears `passwordChangeRequired` |
 
 ## Tests
 
@@ -272,10 +276,10 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 
 | Class | What it tests |
 |---|---|
-| `AuthServiceTest` | Login via email/username fallback, wrong credentials, logout valid/not-found token, expiresAt set correctly — mocks repos + `PasswordEncoder`; injects `expirationMs` via `ReflectionTestUtils` |
-| `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf — mocks `UserRepository` + `PasswordEncoder` + `RabbitTemplate` |
+| `AuthServiceTest` | Login via email/username fallback, wrong credentials, expired temp password → throws, valid temp password consumes expiry, logout valid/not-found token, expiresAt set correctly — mocks repos + `PasswordEncoder`; injects `expirationMs` via `ReflectionTestUtils` |
+| `UserServiceTest` | Role-based getUsers/createUser/getUserById/updateUser/deleteUser, password-change rules, getSelf/updateSelf, resendTempPassword (success + already-permanent throws), updateUser blocked while passwordChangeRequired — mocks `UserRepository` + `PasswordEncoder` + `RabbitTemplate` |
 | `AuthControllerTest` | `POST /auth/login` (200, @Valid rejections, wrong credentials → 409), `POST /auth/logout` (204) |
-| `UserControllerTest` | All `/users` endpoints — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
+| `UserControllerTest` | All `/users` endpoints including `POST /users/{id}/resend-temp-password` — sets `SecurityContextHolder` + registers `AuthenticationPrincipalArgumentResolver` so `@AuthenticationPrincipal` resolves in `standaloneSetup` |
 | `UserDocumentTest` | `onBeforeSave()` sets `createdAt`+`updatedAt` on first call; preserves `createdAt` and advances `updatedAt` on subsequent calls |
 | `TokenDocumentTest` | `onBeforeSave()` sets `createdAt` on first call; preserves it on subsequent calls |
 
@@ -285,7 +289,7 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 |---|---|
 | `UserCreatedConsumerTest` | `onUserCreated` delegates to `EmailService.sendWelcomeEmail()` |
 | `RouteRecalculatedConsumerTest` | `onRouteRecalculated` delegates to `EmailService.sendRouteUpdateEmail()` |
-| `EmailServiceTest` | `sendWelcomeEmail` sends to correct recipient / sets from with display name / sets subject / body contains username + role; `sendRouteUpdateEmail` sends to each recipient (one email per address) / sets subject with node names / body contains distance |
+| `EmailServiceTest` | `sendWelcomeEmail` sends to correct recipient / sets from with display name / sets subject / body contains username + role + temp password; `sendRouteUpdateEmail` sends to each recipient (one email per address) / sets subject with node names / body contains distance |
 
 ## Dependencies
 
