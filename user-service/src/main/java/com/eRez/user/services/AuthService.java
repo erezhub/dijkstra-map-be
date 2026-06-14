@@ -12,6 +12,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.Optional;
 import java.util.UUID;
@@ -37,6 +39,15 @@ public class AuthService {
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
             throw new UserException("Invalid credentials");
+        }
+
+        if (user.isPasswordChangeRequired()) {
+            LocalDateTime expiry = user.getTempPasswordExpiresAt();
+            if (expiry == null || LocalDateTime.now(ZoneOffset.UTC).isAfter(expiry)) {
+                throw new UserException("Temporary password has expired. Please contact your administrator.");
+            }
+            user.setTempPasswordExpiresAt(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(1));
+            userRepository.save(user);
         }
 
         String token = UUID.randomUUID().toString();

@@ -15,7 +15,4 @@ public class CreateUserRequest {
     @NotBlank(message = "email cannot be blank")
     @Email(message = "email must be a valid email address")
     private String email;
-
-    @NotBlank(message = "password cannot be blank")
-    private String password;
 }

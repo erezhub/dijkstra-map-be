@@ -30,7 +30,9 @@ public class EmailService {
                 "Your account has been created.\n\n" +
                 "Role: " + event.getRole() + "\n" +
                 "Email: " + event.getEmail() + "\n\n" +
-                "You can now log in using your email and the password provided by your administrator.");
+                "Your temporary password is: " + event.getTempPassword() + "\n" +
+                "It can be used once and expires in 10 minutes.\n" +
+                "After logging in you will be asked to set a permanent password.");
         log.info("Welcome email sent to '{}'", event.getEmail());
     }
 

@@ -30,6 +30,10 @@ public class UserDocument implements Auditable {
 
     private UserRole role;
 
+    private boolean passwordChangeRequired = false;
+
+    private LocalDateTime tempPasswordExpiresAt;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime updatedAt;

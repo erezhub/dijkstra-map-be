@@ -37,6 +37,7 @@ class EmailServiceTest {
         e.setUsername("Alice");
         e.setEmail("alice@example.com");
         e.setRole("MANAGER");
+        e.setTempPassword("abc123xyz789");
         return e;
     }
 
@@ -83,6 +84,17 @@ class EmailServiceTest {
         String body = mimeMessage.getContent().toString();
         assertThat(body).contains("Alice");
         assertThat(body).contains("MANAGER");
+    }
+
+    @Test
+    void sendWelcomeEmail_bodyContainsTempPassword() throws Exception {
+        MimeMessage mimeMessage = new MimeMessage((Session) null);
+        when(mailSender.createMimeMessage()).thenReturn(mimeMessage);
+
+        emailService.sendWelcomeEmail(event());
+
+        String body = mimeMessage.getContent().toString();
+        assertThat(body).contains("abc123xyz789");
     }
 
     private RouteRecalculatedEvent routeEvent() {

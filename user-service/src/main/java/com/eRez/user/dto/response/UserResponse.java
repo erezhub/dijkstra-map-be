@@ -11,4 +11,5 @@ public class UserResponse {
     private String username;
     private UserRole role;
     private String email;
+    private boolean passwordChangeRequired;
 }

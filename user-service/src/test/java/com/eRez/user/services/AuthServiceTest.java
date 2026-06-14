@@ -17,6 +17,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -122,6 +124,36 @@ class AuthServiceTest {
         verify(tokenRepository).save(captor.capture());
         long expiresAt = captor.getValue().getExpiresAt().getTime();
         assertThat(expiresAt).isBetween(before + 86400000L, after + 86400000L);
+    }
+
+    @Test
+    void login_expiredTempPassword_throws() {
+        UserDocument u = user("u1", "m@x.com", "Manager", "hashed", UserRole.MANAGER);
+        u.setPasswordChangeRequired(true);
+        u.setTempPasswordExpiresAt(LocalDateTime.now(ZoneOffset.UTC).minusSeconds(1));
+        when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(u));
+        when(passwordEncoder.matches("pass", "hashed")).thenReturn(true);
+
+        assertThatThrownBy(() -> authService.login(loginRequest("m@x.com", "pass")))
+                .isInstanceOf(UserException.class)
+                .hasMessageContaining("Temporary password has expired");
+    }
+
+    @Test
+    void login_validTempPassword_consumesExpiry() {
+        UserDocument u = user("u1", "m@x.com", "Manager", "hashed", UserRole.MANAGER);
+        u.setPasswordChangeRequired(true);
+        u.setTempPasswordExpiresAt(LocalDateTime.now(ZoneOffset.UTC).plusMinutes(5));
+        when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(u));
+        when(passwordEncoder.matches("pass", "hashed")).thenReturn(true);
+        when(tokenRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        authService.login(loginRequest("m@x.com", "pass"));
+
+        ArgumentCaptor<UserDocument> userCaptor = ArgumentCaptor.forClass(UserDocument.class);
+        verify(userRepository).save(userCaptor.capture());
+        assertThat(userCaptor.getValue().getTempPasswordExpiresAt())
+                .isBefore(LocalDateTime.now(ZoneOffset.UTC));
     }
 
     // ── logout ────────────────────────────────────────────────────────────────

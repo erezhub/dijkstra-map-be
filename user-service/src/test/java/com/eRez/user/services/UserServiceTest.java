@@ -3,6 +3,7 @@ package com.eRez.user.services;
 import com.eRez.user.database.document.UserDocument;
 import com.eRez.user.database.repository.UserRepository;
 import com.eRez.user.dto.UserRole;
+import com.eRez.user.dto.event.UserCreatedEvent;
 import com.eRez.user.dto.request.CreateUserRequest;
 import com.eRez.user.dto.request.UpdateUserRequest;
 import com.eRez.user.dto.response.UserResponse;
@@ -10,18 +11,24 @@ import com.eRez.user.exception.UserException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,25 +45,26 @@ class UserServiceTest {
     private UserDocument manager;
     private UserDocument regular;
 
-    private static final String PASSWORD = "pass";
     private static final String HASHED_PASSWORD = "hashed";
 
     @BeforeEach
     void setUp() {
+        ReflectionTestUtils.setField(userService, "exchange", "dijkstra.events");
+        ReflectionTestUtils.setField(userService, "userCreatedRoutingKey", "user.created");
+        ReflectionTestUtils.setField(userService, "tempPasswordExpirationMs", 600000L);
         admin   = user("id-admin",   null,      "admin",   UserRole.ADMIN);
         manager = user("id-manager", "m@x.com", "Manager", UserRole.MANAGER);
         regular = user("id-regular", "r@x.com", "Regular", UserRole.REGULAR);
     }
 
     private UserDocument user(String id, String email, String username, UserRole role) {
-        return new UserDocument(id, username, email,HASHED_PASSWORD, role);
+        return new UserDocument(id, username, email, HASHED_PASSWORD, role);
     }
 
-    private CreateUserRequest createUserRequest(String username, String email, String password) {
+    private CreateUserRequest createUserRequest(String username, String email) {
         CreateUserRequest r = new CreateUserRequest();
         r.setUsername(username);
         r.setEmail(email);
-        r.setPassword(password);
         return r;
     }
 
@@ -97,26 +105,35 @@ class UserServiceTest {
     // ── createUser ────────────────────────────────────────────────────────────
 
     @Test
-    void createUser_asAdmin_createsManager() {
+    void createUser_asAdmin_createsManagerWithTempPassword() {
         when(userRepository.findByEmail("admin")).thenReturn(Optional.empty());
         when(userRepository.findByUsername("admin")).thenReturn(Optional.of(admin));
         when(userRepository.existsByEmail("new@x.com")).thenReturn(false);
-        when(passwordEncoder.encode(PASSWORD)).thenReturn(HASHED_PASSWORD);
+        when(passwordEncoder.encode(anyString())).thenReturn(HASHED_PASSWORD);
 
-        UserResponse result = userService.createUser("admin", createUserRequest("NewManager", "new@x.com", PASSWORD));
+        UserResponse result = userService.createUser("admin", createUserRequest("NewManager", "new@x.com"));
 
         assertThat(result.getRole()).isEqualTo(UserRole.MANAGER);
         assertThat(result.getEmail()).isEqualTo("new@x.com");
-        verify(userRepository).save(any());
+        assertThat(result.isPasswordChangeRequired()).isTrue();
+
+        ArgumentCaptor<UserDocument> userCaptor = ArgumentCaptor.forClass(UserDocument.class);
+        verify(userRepository).save(userCaptor.capture());
+        assertThat(userCaptor.getValue().isPasswordChangeRequired()).isTrue();
+        assertThat(userCaptor.getValue().getTempPasswordExpiresAt()).isNotNull();
+
+        ArgumentCaptor<UserCreatedEvent> eventCaptor = ArgumentCaptor.forClass(UserCreatedEvent.class);
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("user.created"), eventCaptor.capture());
+        assertThat(eventCaptor.getValue().getTempPassword()).isNotBlank();
     }
 
     @Test
     void createUser_asManager_createsRegular() {
         when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(manager));
         when(userRepository.existsByEmail("new@x.com")).thenReturn(false);
-        when(passwordEncoder.encode(PASSWORD)).thenReturn(HASHED_PASSWORD);
+        when(passwordEncoder.encode(anyString())).thenReturn(HASHED_PASSWORD);
 
-        UserResponse result = userService.createUser("m@x.com", createUserRequest("NewUser", "new@x.com", PASSWORD));
+        UserResponse result = userService.createUser("m@x.com", createUserRequest("NewUser", "new@x.com"));
 
         assertThat(result.getRole()).isEqualTo(UserRole.REGULAR);
     }
@@ -126,7 +143,7 @@ class UserServiceTest {
         when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(manager));
         when(userRepository.existsByEmail("r@x.com")).thenReturn(true);
 
-        assertThatThrownBy(() -> userService.createUser("m@x.com", createUserRequest("User", "r@x.com", PASSWORD)))
+        assertThatThrownBy(() -> userService.createUser("m@x.com", createUserRequest("User", "r@x.com")))
                 .isInstanceOf(UserException.class)
                 .hasMessageContaining("Email already in use");
 
@@ -181,6 +198,7 @@ class UserServiceTest {
         userService.updateUser("m@x.com", "id-manager", req);
 
         assertThat(manager.getPassword()).isEqualTo("newhashed");
+        assertThat(manager.isPasswordChangeRequired()).isFalse();
         verify(userRepository).save(manager);
     }
 
@@ -210,6 +228,21 @@ class UserServiceTest {
         assertThatThrownBy(() -> userService.updateUser("m@x.com", "id-manager", req))
                 .isInstanceOf(UserException.class)
                 .hasMessageContaining("Email already in use");
+    }
+
+    @Test
+    void updateUser_pendingPasswordChange_throws() {
+        regular.setPasswordChangeRequired(true);
+        regular.setTempPasswordExpiresAt(LocalDateTime.now(ZoneOffset.UTC).plusMinutes(5));
+        when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(manager));
+        when(userRepository.findById("id-regular")).thenReturn(Optional.of(regular));
+
+        UpdateUserRequest req = new UpdateUserRequest();
+        req.setUsername("newname");
+
+        assertThatThrownBy(() -> userService.updateUser("m@x.com", "id-regular", req))
+                .isInstanceOf(UserException.class)
+                .hasMessageContaining("permanent password");
     }
 
     // ── deleteUser ────────────────────────────────────────────────────────────
@@ -243,6 +276,36 @@ class UserServiceTest {
         assertThatThrownBy(() -> userService.deleteUser("m@x.com", "id-admin"))
                 .isInstanceOf(UserException.class)
                 .hasMessageContaining("Access denied");
+    }
+
+    // ── resendTempPassword ────────────────────────────────────────────────────
+
+    @Test
+    void resendTempPassword_success_emailsNewPassword() {
+        regular.setPasswordChangeRequired(true);
+        regular.setTempPasswordExpiresAt(LocalDateTime.now().minusMinutes(5)); // expired
+        when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(manager));
+        when(userRepository.findById("id-regular")).thenReturn(Optional.of(regular));
+        when(passwordEncoder.encode(anyString())).thenReturn(HASHED_PASSWORD);
+
+        userService.resendTempPassword("m@x.com", "id-regular");
+
+        verify(userRepository).save(regular);
+        assertThat(regular.getTempPasswordExpiresAt()).isAfter(LocalDateTime.now(ZoneOffset.UTC));
+
+        ArgumentCaptor<UserCreatedEvent> captor = ArgumentCaptor.forClass(UserCreatedEvent.class);
+        verify(rabbitTemplate).convertAndSend(eq("dijkstra.events"), eq("user.created"), captor.capture());
+        assertThat(captor.getValue().getTempPassword()).isNotBlank();
+    }
+
+    @Test
+    void resendTempPassword_alreadyPermanent_throws() {
+        when(userRepository.findByEmail("m@x.com")).thenReturn(Optional.of(manager));
+        when(userRepository.findById("id-regular")).thenReturn(Optional.of(regular));
+
+        assertThatThrownBy(() -> userService.resendTempPassword("m@x.com", "id-regular"))
+                .isInstanceOf(UserException.class)
+                .hasMessageContaining("permanent password");
     }
 
     // ── getSelf / updateSelf ──────────────────────────────────────────────────

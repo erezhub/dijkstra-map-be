@@ -60,7 +60,7 @@ class UserControllerTest {
     }
 
     private UserResponse response(String id, String username, UserRole role, String email) {
-        return new UserResponse(id, username, role, email);
+        return new UserResponse(id, username, role, email, false);
     }
 
     // ── GET /users ────────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ class UserControllerTest {
         mockMvc.perform(post("/users")
                         .contentType(APPLICATION_JSON)
                         .content("""
-                                {"username": "New Manager", "email": "new@x.com", "password": "pass"}
+                                {"username": "New Manager", "email": "new@x.com"}
                                 """))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.id").value("id-new"))
@@ -109,7 +109,7 @@ class UserControllerTest {
         mockMvc.perform(post("/users")
                         .contentType(APPLICATION_JSON)
                         .content("""
-                                {"username": "", "email": "new@x.com", "password": "pass"}
+                                {"username": "", "email": "new@x.com"}
                                 """))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").isString());
@@ -120,7 +120,7 @@ class UserControllerTest {
         mockMvc.perform(post("/users")
                         .contentType(APPLICATION_JSON)
                         .content("""
-                                {"username": "User", "email": "not-an-email", "password": "pass"}
+                                {"username": "User", "email": "not-an-email"}
                                 """))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").isString());
@@ -134,10 +134,30 @@ class UserControllerTest {
         mockMvc.perform(post("/users")
                         .contentType(APPLICATION_JSON)
                         .content("""
-                                {"username": "User", "email": "r@x.com", "password": "pass"}
+                                {"username": "User", "email": "r@x.com"}
                                 """))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.message").value("Email already in use: r@x.com"));
+    }
+
+    // ── POST /users/{id}/resend-temp-password ─────────────────────────────────
+
+    @Test
+    void resendTempPassword_returns204() throws Exception {
+        mockMvc.perform(post("/users/id-1/resend-temp-password"))
+                .andExpect(status().isNoContent());
+
+        verify(userService).resendTempPassword("admin", "id-1");
+    }
+
+    @Test
+    void resendTempPassword_alreadyPermanent_returns409() throws Exception {
+        doThrow(new UserException("User already has a permanent password"))
+                .when(userService).resendTempPassword("admin", "id-1");
+
+        mockMvc.perform(post("/users/id-1/resend-temp-password"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("User already has a permanent password"));
     }
 
     // ── GET /users/{id} ───────────────────────────────────────────────────────

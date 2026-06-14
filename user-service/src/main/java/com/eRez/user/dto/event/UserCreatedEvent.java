@@ -11,11 +11,13 @@ public class UserCreatedEvent {
     private String username;
     private String email;
     private String role;
+    private String tempPassword;
 
-    public UserCreatedEvent(UserDocument user) {
+    public UserCreatedEvent(UserDocument user, String tempPassword) {
         this.id = user.getId();
         this.username = user.getUsername();
         this.email = user.getEmail();
         this.role = user.getRole().name();
+        this.tempPassword = tempPassword;
     }
 }

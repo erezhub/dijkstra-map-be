@@ -15,6 +15,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
 
@@ -33,6 +36,9 @@ public class UserService {
     @Value("${rabbitmq.routing-key.user-created}")
     private String userCreatedRoutingKey;
 
+    @Value("${temp.password.expiration-ms}")
+    private long tempPasswordExpirationMs;
+
     public List<UserResponse> getUsers(String callerIdentifier) {
         UserDocument caller = loadCaller(callerIdentifier);
         UserRole targetRole = managedRole(caller.getRole());
@@ -49,14 +55,18 @@ public class UserService {
             throw new UserException("Email already in use: " + request.getEmail());
         }
 
+        String tempPassword = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         UserDocument user = new UserDocument(
             UUID.randomUUID().toString(),
             request.getUsername(),
             request.getEmail(),
-            passwordEncoder.encode(request.getPassword()),
+            passwordEncoder.encode(tempPassword),
             targetRole);
+        user.setPasswordChangeRequired(true);
+        user.setTempPasswordExpiresAt(
+            LocalDateTime.now(ZoneOffset.UTC).plus(tempPasswordExpirationMs, ChronoUnit.MILLIS));
         userRepository.save(user);
-        rabbitTemplate.convertAndSend(exchange, userCreatedRoutingKey, new UserCreatedEvent(user));
+        rabbitTemplate.convertAndSend(exchange, userCreatedRoutingKey, new UserCreatedEvent(user, tempPassword));
         log.info("User '{}' created as {} by '{}'", request.getEmail(), targetRole, callerIdentifier);
         return toResponse(user);
     }
@@ -72,6 +82,10 @@ public class UserService {
         UserDocument caller = loadCaller(callerIdentifier);
         UserDocument target = loadById(targetId);
         assertCanManage(caller, target);
+
+        if (target.isPasswordChangeRequired() && !caller.getId().equals(target.getId())) {
+            throw new UserException("User must set a permanent password before they can be modified");
+        }
 
         if (request.getPassword() != null && !target.getId().equals(caller.getId())) {
             throw new UserException("Cannot change another user's password");
@@ -101,6 +115,24 @@ public class UserService {
         userRepository.save(caller);
         log.info("User '{}' updated themselves", callerIdentifier);
         return toResponse(caller);
+    }
+
+    public void resendTempPassword(String callerIdentifier, String targetId) {
+        UserDocument caller = loadCaller(callerIdentifier);
+        UserDocument target = loadById(targetId);
+        assertCanManage(caller, target);
+
+        if (!target.isPasswordChangeRequired()) {
+            throw new UserException("User already has a permanent password");
+        }
+
+        String tempPassword = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
+        target.setPassword(passwordEncoder.encode(tempPassword));
+        target.setTempPasswordExpiresAt(
+            LocalDateTime.now(ZoneOffset.UTC).plus(tempPasswordExpirationMs, ChronoUnit.MILLIS));
+        userRepository.save(target);
+        rabbitTemplate.convertAndSend(exchange, userCreatedRoutingKey, new UserCreatedEvent(target, tempPassword));
+        log.info("Temp password resent for user '{}' by '{}'", targetId, callerIdentifier);
     }
 
     private UserDocument loadCaller(String identifier) {
@@ -152,10 +184,13 @@ public class UserService {
                 throw new UserException("Cannot change another user's password");
             }
             target.setPassword(passwordEncoder.encode(request.getPassword()));
+            target.setPasswordChangeRequired(false);
+            target.setTempPasswordExpiresAt(null);
         }
     }
 
     private UserResponse toResponse(UserDocument doc) {
-        return new UserResponse(doc.getId(), doc.getUsername(), doc.getRole(), doc.getEmail());
+        return new UserResponse(doc.getId(), doc.getUsername(), doc.getRole(), doc.getEmail(),
+                doc.isPasswordChangeRequired());
     }
 }

@@ -64,6 +64,13 @@ public class UserController {
         userService.deleteUser(caller.getUsername(), id);
     }
 
+    @PostMapping("/{id}/resend-temp-password")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void resendTempPassword(@AuthenticationPrincipal UserDetails caller,
+                                   @PathVariable String id) {
+        userService.resendTempPassword(caller.getUsername(), id);
+    }
+
     @GetMapping("/me")
     @ResponseStatus(HttpStatus.OK)
     public UserResponse getSelf(@AuthenticationPrincipal UserDetails caller) {
