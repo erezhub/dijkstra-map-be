@@ -13,6 +13,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.util.Date;
+import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -29,7 +30,9 @@ public class AuthService {
 
     public String login(LoginRequest request) {
         UserDocument user = userRepository.findByEmail(request.getIdentifier())
-                .or(() -> userRepository.findByUsername(request.getIdentifier()))
+                .or(() -> "admin".equals(request.getIdentifier())
+                        ? userRepository.findByUsername("admin")
+                        : Optional.empty())
                 .orElseThrow(() -> new UserException("Invalid credentials"));
 
         if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
