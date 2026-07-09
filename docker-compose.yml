@@ -35,6 +35,19 @@ services:
       retries: 5
       start_period: 30s
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   mailhog:
     image: mailhog/mailhog
     container_name: mailhog
@@ -59,10 +72,15 @@ services:
       SPRING_RABBITMQ_HOST: rabbitmq
       RABBITMQ_EXCHANGE: dijkstra.events
       RABBITMQ_QUEUE_ROUTE__RECALCULATION: map-service.route-recalculation
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      RATE__LIMIT_REQUESTS__PER__MINUTE: 60
     depends_on:
       mongodb:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   user-service:
@@ -82,10 +100,15 @@ services:
       SPRING_RABBITMQ_HOST: rabbitmq
       RABBITMQ_EXCHANGE: dijkstra.events
       RABBITMQ_ROUTING__KEY_USER__CREATED: user.created
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      RATE__LIMIT_REQUESTS__PER__MINUTE: 60
     depends_on:
       mongodb:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   notification-service:
@@ -120,6 +143,18 @@ services:
       ME_CONFIG_BASICAUTH: "false"
     depends_on:
       mongodb:
+        condition: service_healthy
+
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: redis-commander
+    restart: unless-stopped
+    ports:
+      - "8083:8081"
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    depends_on:
+      redis:
         condition: service_healthy
 
 volumes:

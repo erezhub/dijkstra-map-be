@@ -9,6 +9,7 @@
     <version>1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <modules>
+        <module>shared-config</module>
         <module>common</module>
         <module>map-service</module>
         <module>user-service</module>

@@ -10,6 +10,8 @@ Three Spring Boot services sharing a `common` module:
 - **user-service** (port 8081) — user management with role-based access (ADMIN → MANAGER → REGULAR) and opaque-token authentication. Publishes a `user.created` RabbitMQ event after every user creation.
 - **notification-service** (no HTTP port) — RabbitMQ consumer; listens for `user.created` and `route.recalculated` events and sends emails via SMTP. Uses MailHog in dev.
 
+Both map-service and user-service enforce a Redis-backed per-user rate limit on mutating requests (`POST`/`PUT`/`DELETE`); see "Rate limiting" under the `common` module below.
+
 ## Build & Run
 
 ```bash
@@ -66,8 +68,10 @@ docker build -f DockerfileNotificationService -t notification-service:latest .
 | `notification-service` | — | No HTTP; waits for RabbitMQ + MailHog |
 | `frontend` | 3000 | React/Vite SPA served by nginx; built from `../dijkstra-map-fe` |
 | `mongo-express` | 8082 | Web UI for browsing MongoDB — `http://localhost:8082` |
+| `redis` | 6379 | Backs the rate limiter; map-service/user-service wait on its health check |
+| `redis-commander` | 8083 | Web UI for browsing Redis — `http://localhost:8083` |
 
-**Dockerfiles**: multi-stage builds — Maven build stage (`maven:3.9-eclipse-temurin-21`) then slim runtime (`eclipse-temurin:21-jre-jammy`). Each Dockerfile copies only the pom.xml of the other services (not their `src`) so Maven can resolve the parent module graph without compiling unused code. notification-service does not depend on `common` so it only copies `common/pom.xml`.
+**Dockerfiles**: multi-stage builds — Maven build stage (`maven:3.9-eclipse-temurin-21`) then slim runtime (`eclipse-temurin:21-jre-jammy`). Each Dockerfile copies only the pom.xml of sibling modules that aren't real dependencies (not their `src`) so Maven can resolve the parent module graph without compiling unused code. notification-service does not depend on `common` so it only copies `common/pom.xml`. All three services depend on `shared-config`, so all three Dockerfiles copy that module in full (`COPY shared-config/ shared-config/`).
 
 **Frontend Dockerfile** (`dijkstra-map-fe/Dockerfile`): `node:22-alpine` build stage runs `npm ci && npm run build`; `nginx:alpine` runtime stage serves the `dist/` output. `VITE_MAP_URL` and `VITE_USER_URL` are build args (default `http://localhost:8080/8081`) baked into the JS bundle — override via env vars in `.env` if deploying to a non-localhost host. The `nginx.conf` uses `try_files … /index.html` for React Router.
 
@@ -87,7 +91,20 @@ Files roll when they reach 5 MB; archives are grouped into `log/YYYY-MM/` subfol
 
 ## Architecture
 
-Multi-module Maven project (Java 21, Spring Boot 4.0.5). Modules: `common`, `map-service`, `user-service`, `notification-service`.
+Multi-module Maven project (Java 21, Spring Boot 4.0.5). Modules: `shared-config`, `common`, `map-service`, `user-service`, `notification-service`.
+
+### shared-config
+
+Resource-only module (no Java code, no library dependencies) that carries `.properties` files shared across two or more services, loaded via Spring Boot's `spring.config.import` rather than being duplicated verbatim in each service's `application.properties`.
+
+| File | Contents |
+|---|---|
+| `rabbitmq.properties` | `spring.rabbitmq.*` connection properties; `rabbitmq.exchange`; `rabbitmq.routing-key.user-created`, `rabbitmq.routing-key.route-recalculated`, `rabbitmq.queue.route-recalculated` — every rabbitmq key actually read by more than one service (confirmed via `@Value`/`@RabbitListener` usage, not just text-matching the property files) |
+| `rate-limit.properties` | `spring.data.redis.host`, `spring.data.redis.port`, `rate-limit.requests-per-minute` |
+
+All three services depend on it and add `spring.config.import=classpath:rabbitmq.properties[,classpath:rate-limit.properties]` at the top of their own `application.properties`; `notification-service` only imports `rabbitmq.properties` (it has no Redis/rate-limiting need). A service can still override any shared value by redeclaring the key locally — same-file properties win over an imported file's values. Queue/property names used by only one service (e.g. `rabbitmq.queue.route-recalculation`, `rabbitmq.queue.user-created`) stay local to that service, not in `shared-config`.
+
+Being resource-only, `shared-config` doesn't affect `notification-service`'s intentional non-dependency on `common` (see below) — it carries no Spring Security/MongoDB code, only property files.
 
 ### common
 
@@ -97,13 +114,23 @@ Shared infrastructure used by both services.
 |---|---|
 | `exception` | `ServiceException` (base `RuntimeException`); `GlobalExceptionHandler` (`@RestControllerAdvice`, handles `ServiceException` + `MethodArgumentNotValidException` → 409) |
 | `dto/response` | `ErrorResponse` — `{ "message": "..." }` |
-| `config` | `SecurityConfig` — conditional `SecurityFilterChain` beans + `PasswordEncoder` + CORS; `MongoTypeMapperConfig` — `BeanPostProcessor` that removes the `_class` field from all MongoDB documents |
-| `security` | `JwtFilter` — `@Component("jwtFilter")`, validates tokens and loads user via `tokenValidationMongoTemplate` |
+| `config` | `SecurityConfig` — conditional `SecurityFilterChain` beans + `PasswordEncoder` + CORS; `MongoTypeMapperConfig` — `BeanPostProcessor` that removes the `_class` field from all MongoDB documents; `RateLimitConfig` — exposes the rate limiter's Lua script as a `RedisScript<Long>` bean |
+| `security` | `JwtFilter` — `@Component("jwtFilter")`, validates tokens and loads user via `tokenValidationMongoTemplate`; `RateLimiterFilter` — `@Component("rateLimiterFilter")`, enforces the per-user rate limit |
 | `data` | `Auditable` — interface with `onBeforeSave()` for timestamp logic; `AuditingMongoRepository` — custom repository base class |
 
-**SecurityConfig conditional logic**: `authenticatedFilterChain` is `@ConditionalOnBean(name = "jwtFilter")` — active in both services because both scan `com.eRez.common` and pick up the common `JwtFilter`. map-service gets authenticated behaviour; `openFilterChain` (`@ConditionalOnMissingBean`) is the fallback if the bean is absent.
+**SecurityConfig conditional logic**: `authenticatedFilterChain` is `@ConditionalOnBean(name = "jwtFilter")` — active in both services because both scan `com.eRez.common` and pick up the common `JwtFilter`. map-service gets authenticated behaviour; `openFilterChain` (`@ConditionalOnMissingBean`) is the fallback if the bean is absent. The chain injects both `jwtFilter` and `rateLimiterFilter` by `@Qualifier` (required once a second `OncePerRequestFilter` bean exists — type-only injection would throw `NoUniqueBeanDefinitionException`), and wires `.addFilterAfter(rateLimiterFilter, JwtFilter.class)` so the rate limiter runs after JWT auth has populated the `SecurityContext`.
 
 **JwtFilter** (common): uses `@Qualifier("tokenValidationMongoTemplate") MongoTemplate` to query the `tokens` and `users` collections in `dijkstra-users`. Validates `valid == true` and `expiresAt.after(now)`, then loads the user document to build a `UserDetails` principal (email or username as identifier, `ROLE_X` authority). Each service must expose a `"tokenValidationMongoTemplate"` bean pointing to `dijkstra-users`.
+
+**Rate limiting** (`RateLimiterFilter` + `RateLimitConfig`): a Redis-backed rolling-window rate limit, applied only to `POST`/`PUT`/`DELETE` requests — `GET` is never limited. Runs after `JwtFilter`; unauthenticated requests and `ROLE_ADMIN` pass through untouched without touching Redis. For everyone else, the key is `"rate-limit:" + authentication.getName()` (the same identifier `JwtFilter` sets as principal — email or username) with **no service name in the key**, so the quota is a single counter shared globally between map-service and user-service, not two independent per-service budgets. Enforcement is a `DefaultRedisScript<Long>` (`RateLimitConfig.rateLimitScript()`) run atomically via `StringRedisTemplate.execute(...)`:
+```lua
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], 60)
+end
+return count
+```
+`INCR` and the conditional `EXPIRE` must be atomic (a single Lua script) rather than two separate calls, otherwise concurrent requests could race and leave the key with no TTL, or keep pushing the TTL back on every request. Only the *first* request in a fresh window sets the 60-second TTL, so the window is a rolling 60 seconds that starts at a user's first request and resets when Redis expires the key — not a calendar-aligned minute, and not a sliding window that gets extended by later requests. If the returned count exceeds `rate-limit.requests-per-minute`, the filter sets `429` directly and writes an `ErrorResponse` JSON body itself (`GlobalExceptionHandler`'s `@RestControllerAdvice` can't intercept anything from inside a servlet `Filter` — it runs outside the MVC dispatch pipeline, the same reason `JwtFilter` sets status codes directly instead of throwing). If the Redis call itself throws (e.g. Redis is down), the filter **fails open** — logs a warning and lets the request through — since this is a throttling feature, not an authorization control, and a Redis outage shouldn't take down API traffic entirely. Property key: `rate-limit.requests-per-minute` (default 60, sourced from `shared-config`); Redis connection via Spring Boot's own `spring.data.redis.host`/`spring.data.redis.port` auto-config (also in `shared-config`) — no custom connection-factory bean needed.
 
 **Auditing**: `Auditable` interface declares `onBeforeSave()`. Each document implements its own timestamp logic there. `AuditingMongoRepository` overrides `save()` to invoke this hook — bypassing Spring Data MongoDB 4.2+'s `bulkWrite` path which skips entity callbacks. Each service's `MongoConfig` registers it via `@EnableMongoRepositories(repositoryBaseClass = AuditingMongoRepository.class)`.
 
@@ -140,7 +167,7 @@ Shared infrastructure used by both services.
 - `RouteRepository.findRoute` uses `$or` query to match either direction. `findByPathContaining` uses `{ path: "<nodeId>" }` — MongoDB naturally checks array membership.
 - **Route ownership (RBAC)**: REGULAR users can only GET/DELETE routes they created. Multiple users can co-own one route document via `createdBy` list — saving adds the caller's username if not present. REGULAR deleting removes their username; document is physically deleted only when the list is empty. ADMIN/MANAGER can access all routes and always delete the full document. `recalculateAllStale()` (consumer) needs no caller context.
 - **Route recalculation notifications**: after `recalculateRoute()` saves updated data, if the distance or path changed, a `RouteRecalculatedEvent` is published to `dijkstra.events` with routing key `route.recalculated`. Recipients are resolved by `UserLookupService`: route co-owners (from `createdBy`, filtering out `"admin"`) plus all MANAGER emails queried from `dijkstra-users.users`. No event is published if nothing changed or if the recipient list is empty. Both the async consumer path (`recalculateAllStale`) and the on-the-fly path (`getRoute` on a stale route) go through `recalculateRoute()`, so both trigger notifications.
-- Property keys: `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary); `rabbitmq.exchange`, `rabbitmq.queue.route-recalculation`, `rabbitmq.routing-key.route-recalculated`.
+- Property keys (local): `mongodb.map.uri`, `mongodb.map.database` (primary); `mongodb.users.uri` (secondary); `rabbitmq.queue.route-recalculation`. Imported from `shared-config` via `spring.config.import`: `rabbitmq.exchange`, `rabbitmq.routing-key.route-recalculated`, `spring.data.redis.host`/`port`, `rate-limit.requests-per-minute`.
 
 ### user-service
 
@@ -166,7 +193,7 @@ Shared infrastructure used by both services.
 - **Sparse unique index** on `email` allows multiple `null` values (only admin has `null`).
 - **Temporary password on creation**: `CreateUserRequest` has no `password` field. `createUser()` generates a random 12-char alphanumeric temp password, BCrypt-hashes it, sets `passwordChangeRequired = true` and `tempPasswordExpiresAt = now + TTL` on `UserDocument`, then publishes `UserCreatedEvent` with the plaintext temp password so notification-service can email it. TTL is configurable via `temp.password.expiration-ms` (default 600000 ms = 10 min). The temp password is **single-use**: `AuthService.login()` checks the expiry and — on success — immediately sets `tempPasswordExpiresAt` to the past so it cannot be reused. If the user logs out before setting a permanent password they are locked out; an admin/manager can issue a new temp password via `POST /users/{id}/resend-temp-password`. Setting a permanent password (via `PUT /users/me` with a `password` field) clears `passwordChangeRequired` and `tempPasswordExpiresAt`. While `passwordChangeRequired == true`, `updateUser()` by another user throws ("User must set a permanent password before they can be modified").
 - **RabbitMQ**: after `userRepository.save()` in `createUser()`, publishes a `UserCreatedEvent` (`{ id, username, email, role, tempPassword }`) to the `dijkstra.events` topic exchange with routing key `user.created`. `RabbitConfig` declares the exchange and registers `JacksonJsonMessageConverter`.
-- Property keys: `mongodb.uri`, `mongodb.database`; `rabbitmq.exchange`, `rabbitmq.routing-key.user-created`; `temp.password.expiration-ms`.
+- Property keys (local): `mongodb.uri`, `mongodb.database`; `temp.password.expiration-ms`. Imported from `shared-config` via `spring.config.import`: `rabbitmq.exchange`, `rabbitmq.routing-key.user-created`, `spring.data.redis.host`/`port`, `rate-limit.requests-per-minute`.
 
 ### notification-service
 
@@ -187,7 +214,7 @@ Shared infrastructure used by both services.
 - `.env.example` documents the `MAIL_USERNAME` / `MAIL_PASSWORD` env vars needed for real SMTP; `.env` is gitignored.
 - `sendRouteUpdateEmail` sends one email per recipient (no BCC) to avoid recipient address leakage.
 - `sendWelcomeEmail` includes the plaintext temp password and instructions in the email body. The same event/routing key is reused when an admin resends a temp password (`POST /users/{id}/resend-temp-password`).
-- Property keys: `rabbitmq.exchange`, `rabbitmq.queue.user-created`, `rabbitmq.routing-key.user-created`, `rabbitmq.queue.route-recalculated`, `rabbitmq.routing-key.route-recalculated`; `notification.mail.from`, `notification.mail.from-name`.
+- Property keys (local): `rabbitmq.queue.user-created`; `notification.mail.from`, `notification.mail.from-name`. Imported from `shared-config` via `spring.config.import`: `rabbitmq.exchange`, `rabbitmq.routing-key.user-created`, `rabbitmq.queue.route-recalculated`, `rabbitmq.routing-key.route-recalculated`. No Redis import here — notification-service has no rate-limiting need.
 
 ### Data models
 
@@ -211,7 +238,7 @@ TokenDocument { id: String, token: String (unique UUID), userId: String, valid: 
 
 ## REST API
 
-Errors always return `409 Conflict` with `{ "message": "..." }`.
+Errors always return `409 Conflict` with `{ "message": "..." }` — except the rate limiter, which returns `429 Too Many Requests` with the same `{ "message": "..." }` shape (set directly by `RateLimiterFilter`, since it runs as a servlet `Filter` outside `GlobalExceptionHandler`'s reach). Rate limiting applies to `POST`/`PUT`/`DELETE` on both map-service and user-service, exempts `ADMIN`, and shares one counter across both services per user.
 
 ### map-service (`/map`)
 
@@ -256,6 +283,7 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | Class | What it tests |
 |---|---|
 | `JwtFilterTest` | Valid token sets UserDetails authentication, expired → 401, invalidated → 401, unknown → 401, user not found → 401, missing header passes through — mocks `MongoTemplate` |
+| `RateLimiterFilterTest` | GET always passes through untouched; unauthenticated and `ROLE_ADMIN` pass through without calling Redis; under-limit passes, over-limit → 429 with JSON body, boundary (count == limit) still allowed; key format has no service prefix (proves the global/shared quota); Redis throwing fails open — mocks `StringRedisTemplate` + `RedisScript<Long>` |
 | `AuditingMongoRepositoryTest` | `save()` calls `onBeforeSave()` on `Auditable` entities; sets `createdAt`+`updatedAt` on new entity; preserves `createdAt` and advances `updatedAt` on existing entity — mocks `MongoEntityInformation` + `MongoOperations` |
 
 ### map-service (`map-service/src/test/`)
@@ -301,5 +329,6 @@ All `/users` endpoints require `Authorization: Bearer <token>`.
 | `lombok` | root | `@Getter`/`@Setter`/`@Slf4j`/`@RequiredArgsConstructor`/`@AllArgsConstructor` |
 | `spring-boot-starter-test` | root (test) | JUnit 5, Mockito, MockMvc |
 | `spring-boot-starter-security` | common | Spring Security filter chain |
+| `spring-boot-starter-data-redis` | common | Redis client (Lettuce) backing the rate limiter |
 | `spring-boot-starter-amqp` | map-service, user-service, notification-service | RabbitMQ messaging |
 | `spring-boot-starter-mail` | notification-service | JavaMailSender / SMTP |

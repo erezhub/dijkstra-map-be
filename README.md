@@ -9,13 +9,15 @@ Three Spring Boot services sharing a `common` module:
 - **user-service** (port 8081) — user management with role-based access control (ADMIN → MANAGER → REGULAR) and opaque-token authentication.
 - **notification-service** (no HTTP port) — listens for `user.created` and `route.recalculated` events from RabbitMQ and sends emails via SMTP.
 
+map-service and user-service also share a Redis-backed rate limit on write requests — see [Rate Limiting](#rate-limiting) below.
+
 ---
 
 ## Prerequisites
 
 - Java 21, Maven 3.9+ (for local development)
 - Docker & Docker Compose (for containerised deployment)
-- MongoDB, RabbitMQ, and an SMTP server (local dev uses MailHog — included in Docker Compose)
+- MongoDB, RabbitMQ, Redis, and an SMTP server (local dev uses MailHog — included in Docker Compose)
 
 ---
 
@@ -56,6 +58,7 @@ docker compose down
 | user-service | http://localhost:8081 |
 | notification-service | — (background consumer, no HTTP) |
 | mongo-express (DB browser) | http://localhost:8082 |
+| redis-commander (Redis browser) | http://localhost:8083 |
 | RabbitMQ management | http://localhost:15672 |
 | MailHog (dev mail UI) | http://localhost:8025 |
 
@@ -93,6 +96,26 @@ All errors — validation failures, not found, authorization — return `409 Con
 
 ```json
 { "message": "descriptive error message" }
+```
+
+The rate limiter is the one exception: it returns `429 Too Many Requests` with the same JSON shape (see below).
+
+---
+
+## Rate Limiting
+
+map-service and user-service share a single Redis-backed rate limit per user:
+
+- Applies only to `POST`, `PUT`, and `DELETE` requests — `GET` requests are never limited.
+- The limit is a rolling 60-second window that starts counting from a user's first request in a fresh window, not a calendar-aligned minute.
+- ADMIN is exempt. Every other role (MANAGER, REGULAR) is limited.
+- The quota is **global across both services** — one counter per user identity, not two independent per-service budgets.
+- Configurable via `rate-limit.requests-per-minute` (default 60).
+- If Redis is unreachable, requests are allowed through (fail open) rather than blocking all traffic.
+
+**Response 429**
+```json
+{ "message": "Rate limit exceeded. Try again later." }
 ```
 
 ---

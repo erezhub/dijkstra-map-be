@@ -1,5 +1,7 @@
 package com.eRez.common.config;
 
+import com.eRez.common.security.JwtFilter;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -26,14 +28,16 @@ public class SecurityConfig implements WebMvcConfigurer {
     @Bean
     @ConditionalOnBean(name = "jwtFilter")
     public SecurityFilterChain authenticatedFilterChain(HttpSecurity http,
-            OncePerRequestFilter jwtFilter) throws Exception {
+            @Qualifier("jwtFilter") OncePerRequestFilter jwtFilter,
+            @Qualifier("rateLimiterFilter") OncePerRequestFilter rateLimiterFilter) throws Exception {
         http.cors(Customizer.withDefaults())
                 .csrf(AbstractHttpConfigurer::disable)
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/auth/**", "/error").permitAll()
                         .anyRequest().authenticated())
-                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class);
+                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
+                .addFilterAfter(rateLimiterFilter, JwtFilter.class);
         return http.build();
     }
 

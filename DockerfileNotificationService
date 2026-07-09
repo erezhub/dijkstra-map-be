@@ -2,6 +2,7 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /app
 COPY pom.xml .
 COPY common/pom.xml common/
+COPY shared-config/ shared-config/
 COPY notification-service/ notification-service/
 COPY map-service/pom.xml map-service/
 COPY user-service/pom.xml user-service/
