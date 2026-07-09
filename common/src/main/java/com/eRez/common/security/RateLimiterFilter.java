@@ -26,6 +26,7 @@ public class RateLimiterFilter extends OncePerRequestFilter {
     private static final String KEY_PREFIX = "rate-limit:";
     private static final String ADMIN_AUTHORITY = "ROLE_ADMIN";
     private static final Set<String> LIMITED_METHODS = Set.of("POST", "PUT", "DELETE");
+    private static final long WINDOW_SECONDS = 60;
 
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<Long> rateLimitScript;
@@ -77,10 +78,22 @@ public class RateLimiterFilter extends OncePerRequestFilter {
         }
 
         if (count != null && count > requestsPerMinute) {
+            long retryAfterSeconds = WINDOW_SECONDS;
+            try {
+                Long ttl = redisTemplate.getExpire(key);
+                if (ttl != null && ttl > 0) {
+                    retryAfterSeconds = ttl;
+                }
+            } catch (Exception ex) {
+                log.warn("Failed to read TTL for key {}; defaulting Retry-After to {}s", key, retryAfterSeconds, ex);
+            }
+
             response.setStatus(429);
+            response.setHeader("Retry-After", String.valueOf(retryAfterSeconds));
             response.setContentType("application/json");
             response.getWriter().write(
                     objectMapper.writeValueAsString(new ErrorResponse("Rate limit exceeded. Try again later.")));
+            log.warn("Rate limit exceeded for key {}; returning 429", key);
             return;
         }
 

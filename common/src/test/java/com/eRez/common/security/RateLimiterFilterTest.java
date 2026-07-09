@@ -117,6 +117,7 @@ class RateLimiterFilterTest {
         authenticateAs("user@x.com", "REGULAR");
         when(redisTemplate.execute(eq(rateLimitScript), eq(List.of("rate-limit:user@x.com"))))
                 .thenReturn(6L);
+        when(redisTemplate.getExpire("rate-limit:user@x.com")).thenReturn(45L);
 
         MockHttpServletRequest req = new MockHttpServletRequest("POST", "/map/node");
         MockHttpServletResponse res = new MockHttpServletResponse();
@@ -125,9 +126,29 @@ class RateLimiterFilterTest {
 
         assertThat(res.getStatus()).isEqualTo(429);
         assertThat(res.getContentType()).startsWith("application/json");
+        assertThat(res.getHeader("Retry-After")).isEqualTo("45");
         ErrorResponse body = objectMapper.readValue(res.getContentAsString(), ErrorResponse.class);
         assertThat(body.getMessage()).isNotBlank();
         verify(filterChain, never()).doFilter(req, res);
+    }
+
+    // ── Retry-After falls back to the window length if TTL is unavailable ───
+
+    @Test
+    void nonAdminOverLimit_ttlLookupFails_retryAfterDefaultsToWindowLength() throws Exception {
+        authenticateAs("user@x.com", "REGULAR");
+        when(redisTemplate.execute(eq(rateLimitScript), eq(List.of("rate-limit:user@x.com"))))
+                .thenReturn(6L);
+        when(redisTemplate.getExpire("rate-limit:user@x.com"))
+                .thenThrow(new RuntimeException("Redis connection failed"));
+
+        MockHttpServletRequest req = new MockHttpServletRequest("POST", "/map/node");
+        MockHttpServletResponse res = new MockHttpServletResponse();
+
+        filter.doFilterInternal(req, res, filterChain);
+
+        assertThat(res.getStatus()).isEqualTo(429);
+        assertThat(res.getHeader("Retry-After")).isEqualTo("60");
     }
 
     // ── boundary: count equals limit is still allowed ────────────────────────

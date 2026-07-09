@@ -114,9 +114,13 @@ map-service and user-service share a single Redis-backed rate limit per user:
 - If Redis is unreachable, requests are allowed through (fail open) rather than blocking all traffic.
 
 **Response 429**
+```
+Retry-After: 42
+```
 ```json
 { "message": "Rate limit exceeded. Try again later." }
 ```
+> `Retry-After` is the number of seconds until the current window resets.
 
 ---
 
